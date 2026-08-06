@@ -499,6 +499,23 @@
             colorHeights[color] = parseFloat(height);
         }
 
+        // Parse transform attribute and apply to position
+        function getElementTransform(element) {
+            const transform = element.getAttribute('transform');
+            if (!transform) return { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 };
+            
+            const result = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 };
+            const matrix = element.transform.baseVal.consolidate();
+            if (matrix && matrix.type === SVGTransform.SVG_TRANSFORM_MATRIX) {
+                result.x = matrix.e;
+                result.y = matrix.f;
+                result.scaleX = Math.sqrt(matrix.a * matrix.a + matrix.c * matrix.c);
+                result.scaleY = Math.sqrt(matrix.b * matrix.b + matrix.d * matrix.d);
+                result.rotation = Math.atan2(matrix.b, matrix.a);
+            }
+            return result;
+        }
+
         // Create a Three.js Shape from an SVG element
         function createShapeFromSVGElement(element, scale) {
             const tagName = element.tagName.toLowerCase();
@@ -548,7 +565,7 @@
                     case 'M':
                         if (points.length >= 2) {
                             currentX = points[0] * scale;
-                            currentY = -points[1] * scale;
+                            currentY = points[1] * scale;
                             startX = currentX; startY = currentY;
                             shape.moveTo(currentX, currentY);
                         }
@@ -556,7 +573,7 @@
                     case 'L':
                         for (let i = 0; i < points.length; i += 2) {
                             currentX = points[i] * scale;
-                            currentY = -points[i + 1] * scale;
+                            currentY = points[i + 1] * scale;
                             shape.lineTo(currentX, currentY);
                         }
                         break;
@@ -568,15 +585,15 @@
                         break;
                     case 'V':
                         for (let i = 0; i < points.length; i++) {
-                            currentY = -points[i] * scale;
+                            currentY = points[i] * scale;
                             shape.lineTo(currentX, currentY);
                         }
                         break;
                     case 'C':
                         for (let i = 0; i < points.length; i += 6) {
-                            const x1 = points[i] * scale, y1 = -points[i + 1] * scale;
-                            const x2 = points[i + 2] * scale, y2 = -points[i + 3] * scale;
-                            const x = points[i + 4] * scale, y = -points[i + 5] * scale;
+                            const x1 = points[i] * scale, y1 = points[i + 1] * scale;
+                            const x2 = points[i + 2] * scale, y2 = points[i + 3] * scale;
+                            const x = points[i + 4] * scale, y = points[i + 5] * scale;
                             shape.bezierCurveTo(x1, y1, x2, y2, x, y);
                             currentX = x; currentY = y;
                             prevControlX = x2; prevControlY = y2;
@@ -584,8 +601,8 @@
                         break;
                     case 'S':
                         for (let i = 0; i < points.length; i += 4) {
-                            const x2 = points[i] * scale, y2 = -points[i + 1] * scale;
-                            const x = points[i + 2] * scale, y = -points[i + 3] * scale;
+                            const x2 = points[i] * scale, y2 = points[i + 1] * scale;
+                            const x = points[i + 2] * scale, y = points[i + 3] * scale;
                             const x1 = 2 * currentX - prevControlX;
                             const y1 = 2 * currentY - prevControlY;
                             shape.bezierCurveTo(x1, y1, x2, y2, x, y);
@@ -595,8 +612,8 @@
                         break;
                     case 'Q':
                         for (let i = 0; i < points.length; i += 4) {
-                            const x1 = points[i] * scale, y1 = -points[i + 1] * scale;
-                            const x = points[i + 2] * scale, y = -points[i + 3] * scale;
+                            const x1 = points[i] * scale, y1 = points[i + 1] * scale;
+                            const x = points[i + 2] * scale, y = points[i + 3] * scale;
                             shape.quadraticCurveTo(x1, y1, x, y);
                             currentX = x; currentY = y;
                             prevControlX = x1; prevControlY = y1;
@@ -604,7 +621,7 @@
                         break;
                     case 'T':
                         for (let i = 0; i < points.length; i += 2) {
-                            const x = points[i] * scale, y = -points[i + 1] * scale;
+                            const x = points[i] * scale, y = points[i + 1] * scale;
                             const x1 = 2 * currentX - prevControlX;
                             const y1 = 2 * currentY - prevControlY;
                             shape.quadraticCurveTo(x1, y1, x, y);
@@ -614,7 +631,7 @@
                         break;
                     case 'A':
                         for (let i = 0; i < points.length; i += 7) {
-                            const x = points[i + 5] * scale, y = -points[i + 6] * scale;
+                            const x = points[i + 5] * scale, y = points[i + 6] * scale;
                             shape.lineTo(x, y);
                             currentX = x; currentY = y;
                         }
@@ -652,21 +669,21 @@
 
         function createShapeFromRect(element, scale) {
             const x = parseFloat(element.getAttribute('x') || '0') * scale;
-            const y = -parseFloat(element.getAttribute('y') || '0') * scale;
+            const y = parseFloat(element.getAttribute('y') || '0') * scale;
             const width = parseFloat(element.getAttribute('width') || '0') * scale;
             const height = parseFloat(element.getAttribute('height') || '0') * scale;
             const shape = new THREE.Shape();
             shape.moveTo(x, y);
             shape.lineTo(x + width, y);
-            shape.lineTo(x + width, y - height);
-            shape.lineTo(x, y - height);
+            shape.lineTo(x + width, y + height);
+            shape.lineTo(x, y + height);
             shape.lineTo(x, y);
             return shape;
         }
 
         function createShapeFromCircle(element, scale) {
             const cx = parseFloat(element.getAttribute('cx') || '0') * scale;
-            const cy = -parseFloat(element.getAttribute('cy') || '0') * scale;
+            const cy = parseFloat(element.getAttribute('cy') || '0') * scale;
             const r = parseFloat(element.getAttribute('r') || '0') * scale;
             const shape = new THREE.Shape();
             const segments = 16;
@@ -685,7 +702,7 @@
 
         function createShapeFromEllipse(element, scale) {
             const cx = parseFloat(element.getAttribute('cx') || '0') * scale;
-            const cy = -parseFloat(element.getAttribute('cy') || '0') * scale;
+            const cy = parseFloat(element.getAttribute('cy') || '0') * scale;
             const rx = parseFloat(element.getAttribute('rx') || '0') * scale;
             const ry = parseFloat(element.getAttribute('ry') || '0') * scale;
             const shape = new THREE.Shape();
@@ -708,13 +725,13 @@
             if (points.length < 2) return null;
             const shape = new THREE.Shape();
             const first = points[0];
-            shape.moveTo(first.x * scale, -first.y * scale);
+            shape.moveTo(first.x * scale, first.y * scale);
             for (let i = 1; i < points.length; i++) {
                 const pt = points[i];
-                shape.lineTo(pt.x * scale, -pt.y * scale);
+                shape.lineTo(pt.x * scale, pt.y * scale);
             }
             if (!isPolyline) {
-                shape.lineTo(first.x * scale, -first.y * scale);
+                shape.lineTo(first.x * scale, first.y * scale);
             }
             return shape;
         }
@@ -732,11 +749,18 @@
 
         function createShapeFromGroup(element, scale) {
             const children = element.children;
+            const shapes = [];
             for (let i = 0; i < children.length; i++) {
                 const childShape = createShapeFromSVGElement(children[i], scale);
-                if (childShape) return childShape;
+                if (childShape) {
+                    if (Array.isArray(childShape)) {
+                        shapes.push(...childShape);
+                    } else {
+                        shapes.push(childShape);
+                    }
+                }
             }
-            return null;
+            return shapes.length > 0 ? shapes : null;
         }
 
         // Initialize Three.js (lazy initialization)
@@ -795,6 +819,26 @@
             animate();
         }
 
+        // Get SVG viewBox and dimensions for proper scaling
+        function getSVGViewBox(svgElement) {
+            const viewBox = svgElement.getAttribute('viewBox');
+            if (viewBox) {
+                const parts = viewBox.split(/[\s,]+/).map(parseFloat);
+                if (parts.length >= 4) {
+                    return {
+                        x: parts[0],
+                        y: parts[1],
+                        width: parts[2],
+                        height: parts[3]
+                    };
+                }
+            }
+            // Fallback to width/height attributes
+            const width = parseFloat(svgElement.getAttribute('width') || '100');
+            const height = parseFloat(svgElement.getAttribute('height') || '100');
+            return { x: 0, y: 0, width, height };
+        }
+
         // Create 3D structure from simplified SVG
         function create3DStructure() {
             if (!simplifiedSVGContent) {
@@ -824,11 +868,20 @@
                 return;
             }
             
-            // Get SVG dimensions for scaling
-            const svgRect = svgContainer.getBoundingClientRect();
-            const svgWidth = Math.max(svgRect.width, 100);
-            const svgHeight = Math.max(svgRect.height, 100);
-            const scaleFactor = 0.01; // Scale down to Three.js units
+            // Get SVG viewBox for coordinate system
+            const viewBox = getSVGViewBox(svgContainer);
+            const svgViewWidth = viewBox.width || 100;
+            const svgViewHeight = viewBox.height || 100;
+            const svgViewX = viewBox.x || 0;
+            const svgViewY = viewBox.y || 0;
+            
+            // Calculate scale factor to fit in Three.js scene
+            // We want the SVG to fit in a reasonable space (e.g., 10x10 units)
+            const targetSize = 10;
+            const scaleFactor = Math.min(
+                targetSize / svgViewWidth,
+                targetSize / svgViewHeight
+            );
             
             // Get all colored elements from the SVG
             const allElements = svgContainer.querySelectorAll('[fill], [style*="fill"]');
@@ -864,6 +917,9 @@
             const mmToUnits = 0.1;
             const spacingUnits = 0.05;
             
+            // Main container group that will hold all color layers
+            const mainGroup = new THREE.Group();
+            
             let totalZ = 0;
             let currentZ = 0;
             
@@ -887,14 +943,18 @@
                     const geometry = new THREE.BoxGeometry(0.5, 0.5, heightUnits);
                     const mesh = new THREE.Mesh(geometry, material);
                     mesh.position.set(0, 0, currentZ + heightUnits / 2);
-                    scene.add(mesh);
+                    mainGroup.add(mesh);
                 } else {
                     // Create a group for this color's meshes
                     const colorGroup = new THREE.Group();
                     
                     elements.forEach(element => {
-                        const shape = createShapeFromSVGElement(element, scaleFactor);
-                        if (shape) {
+                        const shapesOrShape = createShapeFromSVGElement(element, scaleFactor);
+                        if (!shapesOrShape) return;
+                        
+                        const shapes = Array.isArray(shapesOrShape) ? shapesOrShape : [shapesOrShape];
+                        
+                        shapes.forEach(shape => {
                             const extrudeSettings = {
                                 depth: heightUnits,
                                 bevelEnabled: false
@@ -902,19 +962,16 @@
                             const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
                             const mesh = new THREE.Mesh(geometry, material);
                             
-                            // Center the mesh in X and Y
-                            geometry.computeBoundingBox();
-                            const bbox = geometry.boundingBox;
-                            mesh.position.x = -(bbox.max.x + bbox.min.x) / 2;
-                            mesh.position.y = -(bbox.max.y + bbox.min.y) / 2;
+                            // Position at the Z level for this color
                             mesh.position.z = currentZ + heightUnits / 2;
                             
                             colorGroup.add(mesh);
-                        }
+                        });
                     });
                     
                     if (colorGroup.children.length > 0) {
-                        scene.add(colorGroup);
+                        colorGroup.rotation.x = Math.PI; // Flip Y-axis
+                        mainGroup.add(colorGroup);
                     }
                 }
                 
@@ -922,8 +979,12 @@
                 totalZ = currentZ;
             });
             
-            // Center camera based on total Z extent
-            camera.position.set(0, 0, Math.max(5, totalZ * 1.5));
+            // Center the entire composition in the scene
+            scene.add(mainGroup);
+            
+            // Adjust camera to view the entire scene
+            const cameraDistance = Math.max(5, totalZ * 2);
+            camera.position.set(0, 0, cameraDistance);
             camera.lookAt(0, 0, totalZ / 2);
         }
 
