@@ -149,66 +149,10 @@
         let originalColors = [];
         let colorMap = {};
         let colorHeights = {}; // Maps color -> height in mm
-        let threeJSReady = false;
-        let scene, camera, renderer;
+        let scene, camera, renderer, controls;
         
         // Preview colors when input changes
         colorCountInput.addEventListener('change', previewColorSimplification);
-        
-        // Initialize Three.js when the page loads
-        window.addEventListener('DOMContentLoaded', function() {
-            initThreeJS();
-        });
-        
-        function initThreeJS() {
-            // Create scene
-            scene = new THREE.Scene();
-            scene.background = new THREE.Color(0xf0f0f0);
-            
-            // Create camera
-            const containerWidth = container3D.clientWidth;
-            const containerHeight = container3D.clientHeight - 40; // Subtract header height
-            camera = new THREE.PerspectiveCamera(75, containerWidth / containerHeight, 0.1, 1000);
-            camera.position.set(0, 0, 5);
-            camera.lookAt(0, 0, 0);
-            
-            // Create renderer
-            renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setSize(containerWidth, containerHeight);
-            renderer.setClearColor(0xf0f0f0);
-            container3D.appendChild(renderer.domElement);
-            
-            // Add lights
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-            scene.add(ambientLight);
-            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-            directionalLight.position.set(1, 1, 1);
-            scene.add(directionalLight);
-            
-            // Add orbit controls for better viewing
-            const controls = new THREE.OrbitControls(camera, renderer.domElement);
-            controls.enableDamping = true;
-            controls.dampingFactor = 0.05;
-            
-            // Handle window resize
-            window.addEventListener('resize', function() {
-                const width = container3D.clientWidth;
-                const height = container3D.clientHeight - 40;
-                camera.aspect = width / height;
-                camera.updateProjectionMatrix();
-                renderer.setSize(width, height);
-            });
-            
-            // Start animation loop
-            function animate() {
-                requestAnimationFrame(animate);
-                controls.update();
-                renderer.render(scene, camera);
-            }
-            animate();
-            
-            threeJSReady = true;
-        }
 
         // Handle file selection
         fileInput.addEventListener('change', function(e) {
@@ -555,6 +499,62 @@
             colorHeights[color] = parseFloat(height);
         }
 
+        // Initialize Three.js (lazy initialization)
+        function initThreeJS() {
+            if (scene) return; // Already initialized
+            
+            // Create scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f0f0);
+            
+            // Show the container and force layout update before getting dimensions
+            container3D.style.display = 'block';
+            // Force reflow to ensure dimensions are calculated
+            container3D.offsetHeight;
+            const containerWidth = container3D.clientWidth;
+            const containerHeight = container3D.clientHeight - 40; // Subtract header height
+            
+            // Create camera
+            camera = new THREE.PerspectiveCamera(75, containerWidth / containerHeight, 0.1, 1000);
+            camera.position.set(0, 0, 5);
+            camera.lookAt(0, 0, 0);
+            
+            // Create renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(containerWidth, containerHeight);
+            renderer.setClearColor(0xf0f0f0);
+            container3D.appendChild(renderer.domElement);
+            
+            // Add lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+            
+            // Add orbit controls for better viewing
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            
+            // Handle window resize
+            window.addEventListener('resize', function() {
+                const width = container3D.clientWidth;
+                const height = container3D.clientHeight - 40;
+                camera.aspect = width / height;
+                camera.updateProjectionMatrix();
+                renderer.setSize(width, height);
+            });
+            
+            // Start animation loop
+            function animate() {
+                requestAnimationFrame(animate);
+                controls.update();
+                renderer.render(scene, camera);
+            }
+            animate();
+        }
+
         // Create 3D structure from simplified SVG
         function create3DStructure() {
             if (!simplifiedSVGContent) {
@@ -562,10 +562,8 @@
                 return;
             }
             
-            if (!threeJSReady) {
-                alert('3D renderer not ready');
-                return;
-            }
+            // Initialize Three.js if not already done
+            initThreeJS();
             
             // Clear existing 3D scene
             while (scene.children.length > 0) {
@@ -579,20 +577,41 @@
             directionalLight.position.set(1, 1, 1);
             scene.add(directionalLight);
             
-            // Show the 3D container
-            container3D.style.display = 'block';
-            
             // Get the simplified SVG dimensions
             const svgContainer = svgDisplaySimplified.querySelector('svg');
             let width = 10;
             let height = 10;
             
             if (svgContainer) {
-                width = parseFloat(svgContainer.getAttribute('width') || '10');
-                height = parseFloat(svgContainer.getAttribute('height') || '10');
-                // Convert to reasonable Three.js scale
-                width = width / 100;
-                height = height / 100;
+                // Try to get width/height from SVG attributes or style
+                let rawWidth = 100, rawHeight = 100;
+                const svgWidth = svgContainer.getAttribute('width');
+                const svgHeight = svgContainer.getAttribute('height');
+                
+                if (svgWidth) rawWidth = parseFloat(svgWidth);
+                if (svgHeight) rawHeight = parseFloat(svgHeight);
+                
+                // If no width/height attributes, try viewBox
+                if (rawWidth === 100 && rawHeight === 100) {
+                    const viewBox = svgContainer.getAttribute('viewBox');
+                    if (viewBox) {
+                        const parts = viewBox.split(/[\s,]+/);
+                        if (parts.length >= 4) {
+                            rawWidth = parseFloat(parts[2]);
+                            rawHeight = parseFloat(parts[3]);
+                        }
+                    }
+                }
+                
+                // If still default, use container dimensions
+                if (rawWidth === 100 && rawHeight === 100) {
+                    rawWidth = svgDisplaySimplified.clientWidth || 100;
+                    rawHeight = svgDisplaySimplified.clientHeight || 100;
+                }
+                
+                // Scale down for Three.js
+                width = rawWidth / 100;
+                height = rawHeight / 100;
             }
             
             // Extract unique colors from simplified SVG
