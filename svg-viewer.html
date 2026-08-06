@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SVG Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -99,6 +101,11 @@
         <div class="controls">
             <input type="number" id="color-count-input" min="1" max="256" value="4" />
             <button onclick="simplifyColors()">Simplify Colors</button>
+            <button onclick="create3DStructure()" id="create-3d-btn" disabled>Create 3D Structure</button>
+        </div>
+        
+        <div id="3d-container" style="margin-top: 20px; min-height: 400px; border: 1px solid #ddd; border-radius: 4px; display: none;">
+            <div style="text-align: center; color: #888; font-size: 14px; margin: 10px 0;">3D Structure View</div>
         </div>
         
         <div id="svg-container">
@@ -127,14 +134,73 @@
         const colorCountText = document.getElementById('color-count');
         const colorPaletteText = document.getElementById('color-palette');
         const colorCountInput = document.getElementById('color-count-input');
+        const create3DBtn = document.getElementById('create-3d-btn');
+        const container3D = document.getElementById('3d-container');
         
         let originalSVGContent = '';
         let simplifiedSVGContent = '';
         let originalColors = [];
         let colorMap = {};
+        let threeJSReady = false;
+        let scene, camera, renderer;
         
         // Preview colors when input changes
         colorCountInput.addEventListener('change', previewColorSimplification);
+        
+        // Initialize Three.js when the page loads
+        window.addEventListener('DOMContentLoaded', function() {
+            initThreeJS();
+        });
+        
+        function initThreeJS() {
+            // Create scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f0f0);
+            
+            // Create camera
+            const containerWidth = container3D.clientWidth;
+            const containerHeight = container3D.clientHeight - 40; // Subtract header height
+            camera = new THREE.PerspectiveCamera(75, containerWidth / containerHeight, 0.1, 1000);
+            camera.position.set(0, 0, 5);
+            camera.lookAt(0, 0, 0);
+            
+            // Create renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(containerWidth, containerHeight);
+            renderer.setClearColor(0xf0f0f0);
+            container3D.appendChild(renderer.domElement);
+            
+            // Add lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+            
+            // Add orbit controls for better viewing
+            const controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            
+            // Handle window resize
+            window.addEventListener('resize', function() {
+                const width = container3D.clientWidth;
+                const height = container3D.clientHeight - 40;
+                camera.aspect = width / height;
+                camera.updateProjectionMatrix();
+                renderer.setSize(width, height);
+            });
+            
+            // Start animation loop
+            function animate() {
+                requestAnimationFrame(animate);
+                controls.update();
+                renderer.render(scene, camera);
+            }
+            animate();
+            
+            threeJSReady = true;
+        }
 
         // Handle file selection
         fileInput.addEventListener('change', function(e) {
@@ -216,11 +282,16 @@
                     simplifiedSVGContent = '';
                     originalColors = [];
                     colorMap = {};
+                    container3D.style.display = 'none';
+                    create3DBtn.disabled = true;
                 }
             };
             reader.onerror = function() {
                 infoText.textContent = 'Error reading file';
-                svgDisplay.innerHTML = '';
+                svgDisplayOriginal.innerHTML = '';
+                svgDisplaySimplified.innerHTML = '';
+                container3D.style.display = 'none';
+                create3DBtn.disabled = true;
             };
             reader.readAsText(file);
         }
@@ -276,6 +347,9 @@
             
             // Show the actual color palette from simplified SVG
             colorPaletteText.innerHTML = 'Palette: ' + newColors.map(c => `<span style="background:${c}; color:${getContrastColor(c)}; padding:2px 6px; margin:0 2px; border-radius:3px;">${c}</span>`).join('');
+            
+            // Enable the 3D button
+            create3DBtn.disabled = false;
         }
 
         // Count color frequencies in SVG
@@ -444,6 +518,79 @@
             
             // Show the preview palette
             colorPaletteText.innerHTML = 'Preview palette: ' + paletteColors.map(c => `<span style="background:${c}; color:${getContrastColor(c)}; padding:2px 6px; margin:0 2px; border-radius:3px;">${c}</span>`).join('');
+        }
+
+        // Create 3D structure from simplified SVG
+        function create3DStructure() {
+            if (!simplifiedSVGContent) {
+                alert('Please simplify the colors first');
+                return;
+            }
+            
+            if (!threeJSReady) {
+                alert('3D renderer not ready');
+                return;
+            }
+            
+            // Clear existing 3D scene
+            while (scene.children.length > 0) {
+                scene.remove(scene.children[0]);
+            }
+            
+            // Re-add lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(1, 1, 1);
+            scene.add(directionalLight);
+            
+            // Show the 3D container
+            container3D.style.display = 'block';
+            
+            // Get the simplified SVG dimensions
+            const svgContainer = svgDisplaySimplified.querySelector('svg');
+            let width = 10;
+            let height = 10;
+            
+            if (svgContainer) {
+                width = parseFloat(svgContainer.getAttribute('width') || '10');
+                height = parseFloat(svgContainer.getAttribute('height') || '10');
+                // Convert to reasonable Three.js scale
+                width = width / 100;
+                height = height / 100;
+            }
+            
+            // Extract unique colors from simplified SVG
+            const colors = extractColorsFromSVG(simplifiedSVGContent);
+            const layerSpacing = 0.1; // 1mm spacing, but scaled for visibility
+            
+            // Create a layer for each color
+            colors.forEach((color, index) => {
+                const rgb = colorToRGB(color);
+                const colorHex = rgbToHex(rgb);
+                const material = new THREE.MeshStandardMaterial({
+                    color: new THREE.Color(`#${colorHex.substring(1)}`),
+                    side: THREE.DoubleSide
+                });
+                
+                // Create a plane for this color layer
+                const geometry = new THREE.PlaneGeometry(width, height);
+                const plane = new THREE.Mesh(geometry, material);
+                
+                // Position at Z = index * spacing (centered)
+                const zPosition = (index - (colors.length - 1) / 2) * layerSpacing;
+                plane.position.set(0, 0, zPosition);
+                
+                scene.add(plane);
+                
+                // Add a label (optional)
+                // For now, we'll just use the color plane
+            });
+            
+            // Center camera based on number of layers
+            const totalHeight = (colors.length - 1) * layerSpacing;
+            camera.position.set(0, 0, Math.max(5, totalHeight * 1.5));
+            camera.lookAt(0, 0, 0);
         }
 
         // Get contrasting text color for background
@@ -698,6 +845,8 @@
             colorCountText.textContent = '';
             colorPaletteText.textContent = '';
             fileInput.value = '';
+            container3D.style.display = 'none';
+            create3DBtn.disabled = true;
         }
 
         // Format file size
