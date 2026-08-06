@@ -499,6 +499,246 @@
             colorHeights[color] = parseFloat(height);
         }
 
+        // Create a Three.js Shape from an SVG element
+        function createShapeFromSVGElement(element, scale) {
+            const tagName = element.tagName.toLowerCase();
+            
+            try {
+                switch (tagName) {
+                    case 'path':
+                        return createShapeFromPath(element.getAttribute('d') || '', scale);
+                    case 'rect':
+                        return createShapeFromRect(element, scale);
+                    case 'circle':
+                        return createShapeFromCircle(element, scale);
+                    case 'ellipse':
+                        return createShapeFromEllipse(element, scale);
+                    case 'polygon':
+                        return createShapeFromPolygon(element.getAttribute('points') || '', scale);
+                    case 'polyline':
+                        return createShapeFromPolygon(element.getAttribute('points') || '', scale, true);
+                    case 'line':
+                        return null;
+                    case 'g':
+                        return createShapeFromGroup(element, scale);
+                    default:
+                        console.warn(`Unsupported SVG element: ${tagName}`);
+                        return null;
+                }
+            } catch (e) {
+                console.error(`Error creating shape from ${tagName}:`, e);
+                return null;
+            }
+        }
+
+        function createShapeFromPath(d, scale) {
+            const shape = new THREE.Shape();
+            let currentX = 0, currentY = 0;
+            let startX = 0, startY = 0;
+            let controlX = 0, controlY = 0;
+            let prevControlX = 0, prevControlY = 0;
+            
+            const commands = parseSVGPath(d);
+            
+            commands.forEach(cmd => {
+                const type = cmd.type.toUpperCase();
+                const points = cmd.points || [];
+                
+                switch (type) {
+                    case 'M':
+                        if (points.length >= 2) {
+                            currentX = points[0] * scale;
+                            currentY = -points[1] * scale;
+                            startX = currentX; startY = currentY;
+                            shape.moveTo(currentX, currentY);
+                        }
+                        break;
+                    case 'L':
+                        for (let i = 0; i < points.length; i += 2) {
+                            currentX = points[i] * scale;
+                            currentY = -points[i + 1] * scale;
+                            shape.lineTo(currentX, currentY);
+                        }
+                        break;
+                    case 'H':
+                        for (let i = 0; i < points.length; i++) {
+                            currentX = points[i] * scale;
+                            shape.lineTo(currentX, currentY);
+                        }
+                        break;
+                    case 'V':
+                        for (let i = 0; i < points.length; i++) {
+                            currentY = -points[i] * scale;
+                            shape.lineTo(currentX, currentY);
+                        }
+                        break;
+                    case 'C':
+                        for (let i = 0; i < points.length; i += 6) {
+                            const x1 = points[i] * scale, y1 = -points[i + 1] * scale;
+                            const x2 = points[i + 2] * scale, y2 = -points[i + 3] * scale;
+                            const x = points[i + 4] * scale, y = -points[i + 5] * scale;
+                            shape.bezierCurveTo(x1, y1, x2, y2, x, y);
+                            currentX = x; currentY = y;
+                            prevControlX = x2; prevControlY = y2;
+                        }
+                        break;
+                    case 'S':
+                        for (let i = 0; i < points.length; i += 4) {
+                            const x2 = points[i] * scale, y2 = -points[i + 1] * scale;
+                            const x = points[i + 2] * scale, y = -points[i + 3] * scale;
+                            const x1 = 2 * currentX - prevControlX;
+                            const y1 = 2 * currentY - prevControlY;
+                            shape.bezierCurveTo(x1, y1, x2, y2, x, y);
+                            currentX = x; currentY = y;
+                            prevControlX = x2; prevControlY = y2;
+                        }
+                        break;
+                    case 'Q':
+                        for (let i = 0; i < points.length; i += 4) {
+                            const x1 = points[i] * scale, y1 = -points[i + 1] * scale;
+                            const x = points[i + 2] * scale, y = -points[i + 3] * scale;
+                            shape.quadraticCurveTo(x1, y1, x, y);
+                            currentX = x; currentY = y;
+                            prevControlX = x1; prevControlY = y1;
+                        }
+                        break;
+                    case 'T':
+                        for (let i = 0; i < points.length; i += 2) {
+                            const x = points[i] * scale, y = -points[i + 1] * scale;
+                            const x1 = 2 * currentX - prevControlX;
+                            const y1 = 2 * currentY - prevControlY;
+                            shape.quadraticCurveTo(x1, y1, x, y);
+                            currentX = x; currentY = y;
+                            prevControlX = x1; prevControlY = y1;
+                        }
+                        break;
+                    case 'A':
+                        for (let i = 0; i < points.length; i += 7) {
+                            const x = points[i + 5] * scale, y = -points[i + 6] * scale;
+                            shape.lineTo(x, y);
+                            currentX = x; currentY = y;
+                        }
+                        break;
+                    case 'Z':
+                        shape.lineTo(startX, startY);
+                        currentX = startX; currentY = startY;
+                        break;
+                }
+            });
+            return shape;
+        }
+
+        function parseSVGPath(d) {
+            const commands = [];
+            const commandRegex = /([A-Za-z])([^A-Za-z]*)/g;
+            let match;
+            while ((match = commandRegex.exec(d)) !== null) {
+                const type = match[1];
+                const argsStr = match[2].trim();
+                if (!argsStr) {
+                    commands.push({ type });
+                    continue;
+                }
+                const numbers = [];
+                const numRegex = /[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?/g;
+                let numMatch;
+                while ((numMatch = numRegex.exec(argsStr)) !== null) {
+                    numbers.push(parseFloat(numMatch[0]));
+                }
+                commands.push({ type, points: numbers });
+            }
+            return commands;
+        }
+
+        function createShapeFromRect(element, scale) {
+            const x = parseFloat(element.getAttribute('x') || '0') * scale;
+            const y = -parseFloat(element.getAttribute('y') || '0') * scale;
+            const width = parseFloat(element.getAttribute('width') || '0') * scale;
+            const height = parseFloat(element.getAttribute('height') || '0') * scale;
+            const shape = new THREE.Shape();
+            shape.moveTo(x, y);
+            shape.lineTo(x + width, y);
+            shape.lineTo(x + width, y - height);
+            shape.lineTo(x, y - height);
+            shape.lineTo(x, y);
+            return shape;
+        }
+
+        function createShapeFromCircle(element, scale) {
+            const cx = parseFloat(element.getAttribute('cx') || '0') * scale;
+            const cy = -parseFloat(element.getAttribute('cy') || '0') * scale;
+            const r = parseFloat(element.getAttribute('r') || '0') * scale;
+            const shape = new THREE.Shape();
+            const segments = 16;
+            shape.moveTo(cx + r, cy);
+            for (let i = 1; i <= segments; i++) {
+                const theta = (i / segments) * Math.PI * 2;
+                const x = cx + r * Math.cos(theta);
+                const y = cy + r * Math.sin(theta);
+                const thetaMid = ((i - 0.5) / segments) * Math.PI * 2;
+                const mx = cx + r * Math.cos(thetaMid);
+                const my = cy + r * Math.sin(thetaMid);
+                shape.quadraticCurveTo(mx, my, x, y);
+            }
+            return shape;
+        }
+
+        function createShapeFromEllipse(element, scale) {
+            const cx = parseFloat(element.getAttribute('cx') || '0') * scale;
+            const cy = -parseFloat(element.getAttribute('cy') || '0') * scale;
+            const rx = parseFloat(element.getAttribute('rx') || '0') * scale;
+            const ry = parseFloat(element.getAttribute('ry') || '0') * scale;
+            const shape = new THREE.Shape();
+            const segments = 16;
+            shape.moveTo(cx + rx, cy);
+            for (let i = 1; i <= segments; i++) {
+                const theta = (i / segments) * Math.PI * 2;
+                const x = cx + rx * Math.cos(theta);
+                const y = cy + ry * Math.sin(theta);
+                const thetaMid = ((i - 0.5) / segments) * Math.PI * 2;
+                const mx = cx + rx * Math.cos(thetaMid);
+                const my = cy + ry * Math.sin(thetaMid);
+                shape.quadraticCurveTo(mx, my, x, y);
+            }
+            return shape;
+        }
+
+        function createShapeFromPolygon(pointsStr, scale, isPolyline = false) {
+            const points = parseSVGPoints(pointsStr);
+            if (points.length < 2) return null;
+            const shape = new THREE.Shape();
+            const first = points[0];
+            shape.moveTo(first.x * scale, -first.y * scale);
+            for (let i = 1; i < points.length; i++) {
+                const pt = points[i];
+                shape.lineTo(pt.x * scale, -pt.y * scale);
+            }
+            if (!isPolyline) {
+                shape.lineTo(first.x * scale, -first.y * scale);
+            }
+            return shape;
+        }
+
+        function parseSVGPoints(pointsStr) {
+            const points = [];
+            const tokens = pointsStr.trim().split(/[,\s]+/);
+            for (let i = 0; i < tokens.length; i += 2) {
+                if (i + 1 < tokens.length) {
+                    points.push({ x: parseFloat(tokens[i]), y: parseFloat(tokens[i + 1]) });
+                }
+            }
+            return points;
+        }
+
+        function createShapeFromGroup(element, scale) {
+            const children = element.children;
+            for (let i = 0; i < children.length; i++) {
+                const childShape = createShapeFromSVGElement(children[i], scale);
+                if (childShape) return childShape;
+            }
+            return null;
+        }
+
         // Initialize Three.js (lazy initialization)
         function initThreeJS() {
             if (scene) return; // Already initialized
@@ -577,82 +817,107 @@
             directionalLight.position.set(1, 1, 1);
             scene.add(directionalLight);
             
-            // Get the simplified SVG dimensions
+            // Get the simplified SVG element
             const svgContainer = svgDisplaySimplified.querySelector('svg');
-            let width = 10;
-            let height = 10;
-            
-            if (svgContainer) {
-                // Try to get width/height from SVG attributes or style
-                let rawWidth = 100, rawHeight = 100;
-                const svgWidth = svgContainer.getAttribute('width');
-                const svgHeight = svgContainer.getAttribute('height');
-                
-                if (svgWidth) rawWidth = parseFloat(svgWidth);
-                if (svgHeight) rawHeight = parseFloat(svgHeight);
-                
-                // If no width/height attributes, try viewBox
-                if (rawWidth === 100 && rawHeight === 100) {
-                    const viewBox = svgContainer.getAttribute('viewBox');
-                    if (viewBox) {
-                        const parts = viewBox.split(/[\s,]+/);
-                        if (parts.length >= 4) {
-                            rawWidth = parseFloat(parts[2]);
-                            rawHeight = parseFloat(parts[3]);
-                        }
-                    }
-                }
-                
-                // If still default, use container dimensions
-                if (rawWidth === 100 && rawHeight === 100) {
-                    rawWidth = svgDisplaySimplified.clientWidth || 100;
-                    rawHeight = svgDisplaySimplified.clientHeight || 100;
-                }
-                
-                // Scale down for Three.js
-                width = rawWidth / 100;
-                height = rawHeight / 100;
+            if (!svgContainer) {
+                console.error('No SVG element found');
+                return;
             }
             
-            // Extract unique colors from simplified SVG
-            const colors = extractColorsFromSVG(simplifiedSVGContent);
-            const mmToUnits = 0.1; // Scale factor: 1mm = 0.1 Three.js units for visibility
-            const spacingUnits = 0.05; // Small spacing between layers in Three.js units
+            // Get SVG dimensions for scaling
+            const svgRect = svgContainer.getBoundingClientRect();
+            const svgWidth = Math.max(svgRect.width, 100);
+            const svgHeight = Math.max(svgRect.height, 100);
+            const scaleFactor = 0.01; // Scale down to Three.js units
             
-            // Calculate total Z extent for camera positioning
+            // Get all colored elements from the SVG
+            const allElements = svgContainer.querySelectorAll('[fill], [style*="fill"]');
+            
+            // Group elements by their fill color (normalized to hex)
+            const elementsByColor = {};
+            const colorToHex = {};
+            
+            allElements.forEach(element => {
+                let fillColor = element.getAttribute('fill') || '';
+                const style = element.getAttribute('style') || '';
+                
+                // Check style attribute for fill
+                if (!fillColor && style) {
+                    const fillMatch = style.match(/fill:\s*([^;]+)/i);
+                    if (fillMatch) fillColor = fillMatch[1].trim();
+                }
+                
+                if (!fillColor || fillColor === 'none' || fillColor === 'inherit') return;
+                
+                // Normalize the color to hex
+                const hexColor = rgbToHex(colorToRGB(fillColor));
+                
+                if (!elementsByColor[hexColor]) {
+                    elementsByColor[hexColor] = [];
+                    colorToHex[hexColor] = fillColor; // Store original color string
+                }
+                elementsByColor[hexColor].push(element);
+            });
+            
+            // Extract unique colors from simplified SVG (for ordering)
+            const colors = extractColorsFromSVG(simplifiedSVGContent);
+            const mmToUnits = 0.1;
+            const spacingUnits = 0.05;
+            
             let totalZ = 0;
             let currentZ = 0;
             
-            // Create a layer for each color
+            // Process each color
             colors.forEach((color, index) => {
+                const colorHex = rgbToHex(colorToRGB(color));
+                const elements = elementsByColor[colorHex] || [];
+                
                 const rgb = colorToRGB(color);
-                const colorHex = rgbToHex(rgb);
                 const material = new THREE.MeshStandardMaterial({
-                    color: new THREE.Color(`#${colorHex.substring(1)}`),
+                    color: new THREE.Color(rgb.r / 255, rgb.g / 255, rgb.b / 255),
                     side: THREE.DoubleSide,
-                    transparent: true,
-                    opacity: 0.8
+                    transparent: false
                 });
                 
-                // Get the height for this color (default to 1mm if not set)
                 const heightMM = colorHeights[color] || 1;
                 const heightUnits = heightMM * mmToUnits;
                 
-                // Create a box for this color layer
-                // BoxGeometry(width, height, depth)
-                // width = X dimension (SVG width)
-                // height = Y dimension (SVG height) 
-                // depth = Z dimension (layer height/thickness)
-                const geometry = new THREE.BoxGeometry(width, height, heightUnits);
-                const mesh = new THREE.Mesh(geometry, material);
+                if (elements.length === 0) {
+                    // Fallback: create a small box for this color
+                    const geometry = new THREE.BoxGeometry(0.5, 0.5, heightUnits);
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.position.set(0, 0, currentZ + heightUnits / 2);
+                    scene.add(mesh);
+                } else {
+                    // Create a group for this color's meshes
+                    const colorGroup = new THREE.Group();
+                    
+                    elements.forEach(element => {
+                        const shape = createShapeFromSVGElement(element, scaleFactor);
+                        if (shape) {
+                            const extrudeSettings = {
+                                depth: heightUnits,
+                                bevelEnabled: false
+                            };
+                            const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+                            const mesh = new THREE.Mesh(geometry, material);
+                            
+                            // Center the mesh in X and Y
+                            geometry.computeBoundingBox();
+                            const bbox = geometry.boundingBox;
+                            mesh.position.x = -(bbox.max.x + bbox.min.x) / 2;
+                            mesh.position.y = -(bbox.max.y + bbox.min.y) / 2;
+                            mesh.position.z = currentZ + heightUnits / 2;
+                            
+                            colorGroup.add(mesh);
+                        }
+                    });
+                    
+                    if (colorGroup.children.length > 0) {
+                        scene.add(colorGroup);
+                    }
+                }
                 
-                // Position at current Z (base of the layer)
-                // The box's depth (Z dimension) extends from currentZ to currentZ + heightUnits
-                mesh.position.set(0, 0, currentZ + heightUnits / 2);
-                
-                scene.add(mesh);
-                
-                // Update for next layer
                 currentZ += heightUnits + spacingUnits;
                 totalZ = currentZ;
             });
