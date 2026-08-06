@@ -104,6 +104,11 @@
             <button onclick="create3DStructure()" id="create-3d-btn" disabled>Create 3D Structure</button>
         </div>
         
+        <div id="color-heights-container" style="margin-top: 20px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; display: none;">
+            <div style="color: #888; font-size: 14px; margin-bottom: 10px;">Color Heights (mm):</div>
+            <div id="color-heights-list"></div>
+        </div>
+        
         <div id="3d-container" style="margin-top: 20px; min-height: 400px; border: 1px solid #ddd; border-radius: 4px; display: none;">
             <div style="text-align: center; color: #888; font-size: 14px; margin: 10px 0;">3D Structure View</div>
         </div>
@@ -136,11 +141,14 @@
         const colorCountInput = document.getElementById('color-count-input');
         const create3DBtn = document.getElementById('create-3d-btn');
         const container3D = document.getElementById('3d-container');
+        const colorHeightsContainer = document.getElementById('color-heights-container');
+        const colorHeightsList = document.getElementById('color-heights-list');
         
         let originalSVGContent = '';
         let simplifiedSVGContent = '';
         let originalColors = [];
         let colorMap = {};
+        let colorHeights = {}; // Maps color -> height in mm
         let threeJSReady = false;
         let scene, camera, renderer;
         
@@ -283,6 +291,9 @@
                     originalColors = [];
                     colorMap = {};
                     container3D.style.display = 'none';
+                    colorHeightsContainer.style.display = 'none';
+                    colorHeightsList.innerHTML = '';
+                    colorHeights = {};
                     create3DBtn.disabled = true;
                 }
             };
@@ -291,6 +302,9 @@
                 svgDisplayOriginal.innerHTML = '';
                 svgDisplaySimplified.innerHTML = '';
                 container3D.style.display = 'none';
+                colorHeightsContainer.style.display = 'none';
+                colorHeightsList.innerHTML = '';
+                colorHeights = {};
                 create3DBtn.disabled = true;
             };
             reader.readAsText(file);
@@ -347,6 +361,22 @@
             
             // Show the actual color palette from simplified SVG
             colorPaletteText.innerHTML = 'Palette: ' + newColors.map(c => `<span style="background:${c}; color:${getContrastColor(c)}; padding:2px 6px; margin:0 2px; border-radius:3px;">${c}</span>`).join('');
+            
+            // Setup color heights UI
+            colorHeights = {};
+            colorHeightsList.innerHTML = newColors.map((color, index) => {
+                const colorHex = rgbToHex(colorToRGB(color));
+                colorHeights[color] = 1; // Default height: 1mm
+                return `
+                    <div style="display: flex; align-items: center; margin: 5px 0; gap: 10px;">
+                        <span style="background:${color}; color:${getContrastColor(color)}; padding:2px 6px; border-radius:3px; min-width: 60px;">${color}</span>
+                        <input type="number" value="1" min="0.1" step="0.1" 
+                               onchange="setColorHeight('${color}', this.value)" 
+                               style="width: 60px;" /> mm
+                    </div>
+                `;
+            }).join('');
+            colorHeightsContainer.style.display = 'block';
             
             // Enable the 3D button
             create3DBtn.disabled = false;
@@ -520,6 +550,11 @@
             colorPaletteText.innerHTML = 'Preview palette: ' + paletteColors.map(c => `<span style="background:${c}; color:${getContrastColor(c)}; padding:2px 6px; margin:0 2px; border-radius:3px;">${c}</span>`).join('');
         }
 
+        // Set height for a specific color
+        function setColorHeight(color, height) {
+            colorHeights[color] = parseFloat(height);
+        }
+
         // Create 3D structure from simplified SVG
         function create3DStructure() {
             if (!simplifiedSVGContent) {
@@ -562,7 +597,12 @@
             
             // Extract unique colors from simplified SVG
             const colors = extractColorsFromSVG(simplifiedSVGContent);
-            const layerSpacing = 0.1; // 1mm spacing, but scaled for visibility
+            const mmToUnits = 0.1; // Scale factor: 1mm = 0.1 Three.js units for visibility
+            const spacingUnits = 0.05; // Small spacing between layers in Three.js units
+            
+            // Calculate total Z extent for camera positioning
+            let totalZ = 0;
+            let currentZ = 0;
             
             // Create a layer for each color
             colors.forEach((color, index) => {
@@ -570,27 +610,37 @@
                 const colorHex = rgbToHex(rgb);
                 const material = new THREE.MeshStandardMaterial({
                     color: new THREE.Color(`#${colorHex.substring(1)}`),
-                    side: THREE.DoubleSide
+                    side: THREE.DoubleSide,
+                    transparent: true,
+                    opacity: 0.8
                 });
                 
-                // Create a plane for this color layer
-                const geometry = new THREE.PlaneGeometry(width, height);
-                const plane = new THREE.Mesh(geometry, material);
+                // Get the height for this color (default to 1mm if not set)
+                const heightMM = colorHeights[color] || 1;
+                const heightUnits = heightMM * mmToUnits;
                 
-                // Position at Z = index * spacing (centered)
-                const zPosition = (index - (colors.length - 1) / 2) * layerSpacing;
-                plane.position.set(0, 0, zPosition);
+                // Create a box for this color layer
+                // BoxGeometry(width, height, depth)
+                // width = X dimension (SVG width)
+                // height = Y dimension (SVG height) 
+                // depth = Z dimension (layer height/thickness)
+                const geometry = new THREE.BoxGeometry(width, height, heightUnits);
+                const mesh = new THREE.Mesh(geometry, material);
                 
-                scene.add(plane);
+                // Position at current Z (base of the layer)
+                // The box's depth (Z dimension) extends from currentZ to currentZ + heightUnits
+                mesh.position.set(0, 0, currentZ + heightUnits / 2);
                 
-                // Add a label (optional)
-                // For now, we'll just use the color plane
+                scene.add(mesh);
+                
+                // Update for next layer
+                currentZ += heightUnits + spacingUnits;
+                totalZ = currentZ;
             });
             
-            // Center camera based on number of layers
-            const totalHeight = (colors.length - 1) * layerSpacing;
-            camera.position.set(0, 0, Math.max(5, totalHeight * 1.5));
-            camera.lookAt(0, 0, 0);
+            // Center camera based on total Z extent
+            camera.position.set(0, 0, Math.max(5, totalZ * 1.5));
+            camera.lookAt(0, 0, totalZ / 2);
         }
 
         // Get contrasting text color for background
@@ -846,6 +896,9 @@
             colorPaletteText.textContent = '';
             fileInput.value = '';
             container3D.style.display = 'none';
+            colorHeightsContainer.style.display = 'none';
+            colorHeightsList.innerHTML = '';
+            colorHeights = {};
             create3DBtn.disabled = true;
         }
 
