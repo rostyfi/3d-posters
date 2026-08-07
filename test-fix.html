@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Color Simplification Fix Test</title>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
+        h1 { color: #333; }
+        .test-section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 4px; }
+        .svg-container { display: flex; gap: 20px; margin-top: 15px; }
+        .svg-box { flex: 1; padding: 10px; border: 1px solid #eee; border-radius: 4px; }
+        .result { margin-top: 10px; padding: 10px; background: #e8f5e8; border-radius: 4px; }
+        .error { margin-top: 10px; padding: 10px; background: #ffebee; border-radius: 4px; color: #c62828; }
+        button { padding: 10px 20px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #45a049; }
+        pre { background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Color Simplification Fix Test</h1>
+        <p>This test verifies that the regex fix in <code>applyColorMap</code> correctly replaces colors in SVG content.</p>
+        
+        <div class="test-section">
+            <h2>Test 1: Simple 3-color SVG</h2>
+            <p>Input SVG with colors: #ff0000 (red), #00ff00 (green), #0000ff (blue)</p>
+            <button onclick="runTest1()">Run Test</button>
+            <div id="test1-result" class="result" style="display:none;"></div>
+            <div id="test1-error" class="error" style="display:none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>Test 2: SVG with 6-digit and 3-digit hex</h2>
+            <p>Input SVG with colors: #ff0000, #00ff00, #f00 (normalized from 3-digit)</p>
+            <button onclick="runTest2()">Run Test</button>
+            <div id="test2-result" class="result" style="display:none;"></div>
+            <div id="test2-error" class="error" style="display:none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h2>Test 3: SVG with named colors</h2>
+            <p>Input SVG with colors: red, green, blue (named colors)</p>
+            <button onclick="runTest3()">Run Test</button>
+            <div id="test3-result" class="result" style="display:none;"></div>
+            <div id="test3-error" class="error" style="display:none;"></div>
+        </div>
+    </div>
+
+    <script>
+        // Helper functions (copied from svg-viewer.html)
+        function colorToRGB(color) {
+            if (color.startsWith('#')) {
+                const hex = color.substring(1);
+                let r, g, b;
+                if (hex.length === 3) {
+                    r = parseInt(hex[0] + hex[0], 16);
+                    g = parseInt(hex[1] + hex[1], 16);
+                    b = parseInt(hex[2] + hex[2], 16);
+                } else if (hex.length === 4) {
+                    r = parseInt(hex[0] + hex[0], 16);
+                    g = parseInt(hex[1] + hex[1], 16);
+                    b = parseInt(hex[2] + hex[2], 16);
+                } else if (hex.length === 6) {
+                    r = parseInt(hex.substring(0, 2), 16);
+                    g = parseInt(hex.substring(2, 4), 16);
+                    b = parseInt(hex.substring(4, 6), 16);
+                } else if (hex.length === 8) {
+                    r = parseInt(hex.substring(0, 2), 16);
+                    g = parseInt(hex.substring(2, 4), 16);
+                    b = parseInt(hex.substring(4, 6), 16);
+                }
+                return {r, g, b};
+            }
+            const rgbMatch = color.match(/(?:rgb|rgba)\([\s]*(\d+)[\s]*,[\s]*(\d+)[\s]*,[\s]*(\d+)/);
+            if (rgbMatch) {
+                return {
+                    r: parseInt(rgbMatch[1]),
+                    g: parseInt(rgbMatch[2]),
+                    b: parseInt(rgbMatch[3])
+                };
+            }
+            const namedColors = {
+                'red': {r: 255, g: 0, b: 0}, 'green': {r: 0, g: 128, b: 0}, 'lime': {r: 0, g: 255, b: 0},
+                'blue': {r: 0, g: 0, b: 255}, 'yellow': {r: 255, g: 255, b: 0}, 'cyan': {r: 0, g: 255, b: 255},
+                'magenta': {r: 255, g: 0, b: 255}, 'black': {r: 0, g: 0, b: 0}, 'white': {r: 255, g: 255, b: 255},
+                'gray': {r: 128, g: 128, b: 128}, 'grey': {r: 128, g: 128, b: 128}
+            };
+            const lowerColor = color.toLowerCase();
+            if (namedColors[lowerColor]) {
+                return namedColors[lowerColor];
+            }
+            return {r: 0, g: 0, b: 0};
+        }
+
+        function rgbToHex(rgb) {
+            const r = Math.max(0, Math.min(255, rgb.r));
+            const g = Math.max(0, Math.min(255, rgb.g));
+            const b = Math.max(0, Math.min(255, rgb.b));
+            const toHex = (c) => {
+                const hex = c.toString(16);
+                return hex.length === 1 ? '0' + hex : hex;
+            };
+            return '#' + toHex(r) + toHex(g) + toHex(b);
+        }
+
+        function colorDistance(c1, c2) {
+            const dr = c1.r - c2.r;
+            const dg = c1.g - c2.g;
+            const db = c1.b - c2.b;
+            return Math.sqrt(dr * dr + dg * dg + db * db);
+        }
+
+        function kMeansCluster(colors, k, maxIterations) {
+            const centroids = [];
+            const usedIndices = new Set();
+            for (let i = 0; i < k; i++) {
+                let idx;
+                do {
+                    idx = Math.floor(Math.random() * colors.length);
+                } while (usedIndices.has(idx));
+                usedIndices.add(idx);
+                centroids.push({...colors[idx]});
+            }
+            for (let iteration = 0; iteration < maxIterations; iteration++) {
+                const clusters = Array(k).fill().map(() => []);
+                for (const color of colors) {
+                    let minDist = Infinity;
+                    let clusterIdx = 0;
+                    for (let i = 0; i < centroids.length; i++) {
+                        const dist = colorDistance(color, centroids[i]);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            clusterIdx = i;
+                        }
+                    }
+                    clusters[clusterIdx].push(color);
+                }
+                let changed = false;
+                for (let i = 0; i < k; i++) {
+                    if (clusters[i].length === 0) continue;
+                    const sum = {r: 0, g: 0, b: 0};
+                    for (const color of clusters[i]) {
+                        sum.r += color.r;
+                        sum.g += color.g;
+                        sum.b += color.b;
+                    }
+                    const newCentroid = {
+                        r: Math.round(sum.r / clusters[i].length),
+                        g: Math.round(sum.g / clusters[i].length),
+                        b: Math.round(sum.b / clusters[i].length)
+                    };
+                    if (newCentroid.r !== centroids[i].r || 
+                        newCentroid.g !== centroids[i].g || 
+                        newCentroid.b !== centroids[i].b) {
+                        changed = true;
+                    }
+                    centroids[i] = newCentroid;
+                }
+                if (!changed) break;
+            }
+            return centroids;
+        }
+
+        // The FIXED applyColorMap function
+        function applyColorMap(svgContent, colorMap) {
+            let result = svgContent;
+            
+            // Step 1: Convert all color formats to normalized 6-digit lowercase hex
+            result = result.replace(/rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)/gi, (m, r, g, b) => {
+                return rgbToHex({r: parseInt(r), g: parseInt(g), b: parseInt(b)});
+            });
+            result = result.replace(/rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*(?:[01]?\.\d*|\.\d+))?\s*\)/gi, (m, r, g, b) => {
+                return rgbToHex({r: parseInt(r), g: parseInt(g), b: parseInt(b)});
+            });
+            result = result.replace(/\b(red|green|lime|blue|yellow|cyan|magenta|black|white|gray|grey|silver|maroon|navy|teal|purple|orange|pink|brown|aqua|fuchsia|gold)\b/gi, (m, name) => {
+                const map = {
+                    'red':'#ff0000','green':'#008000','lime':'#00ff00','blue':'#0000ff',
+                    'yellow':'#ffff00','cyan':'#00ffff','magenta':'#ff00ff','black':'#000000',
+                    'white':'#ffffff','gray':'#808080','grey':'#808080','silver':'#c0c0c0',
+                    'maroon':'#800000','navy':'#000080','teal':'#008080','purple':'#800080',
+                    'orange':'#ffa500','pink':'#ffc0cb','brown':'#a52a2a','aqua':'#00ffff',
+                    'fuchsia':'#ff00ff','gold':'#ffd700'
+                };
+                return map[name.toLowerCase()] || m;
+            });
+            result = result.replace(/#([0-9a-f]{8})/gi, (m, p1) => '#' + p1.substring(0,6).toLowerCase());
+            result = result.replace(/#([0-9a-f]{6})/gi, (m, p1) => '#'+p1.toLowerCase());
+            result = result.replace(/#([0-9a-f]{4})/gi, (m, p1) => {
+                const r=p1[0].toLowerCase(),g=p1[1].toLowerCase(),b=p1[2].toLowerCase();
+                return '#'+r+r+g+g+b+b;
+            });
+            result = result.replace(/#([0-9a-f]{3})/gi, (m, p1) => {
+                const r=p1[0].toLowerCase(),g=p1[1].toLowerCase(),b=p1[2].toLowerCase();
+                return '#'+r+r+g+g+b+b;
+            });
+            
+            // Step 2: Apply color map - THE FIX
+            for (const [oldHex, newHex] of Object.entries(colorMap)) {
+                if (oldHex.startsWith('#')) {
+                    const oldNorm = oldHex.toLowerCase();
+                    const newNorm = newHex.toLowerCase();
+                    result = result.replace(
+                        new RegExp(oldNorm + '(?![0-9a-fA-F])', 'gi'),
+                        newNorm
+                    );
+                }
+            }
+            
+            return result;
+        }
+
+        function runTest(name, inputSVG, expectedColors, resultDiv, errorDiv) {
+            try {
+                // Extract colors from input
+                const colorRegex = /fill="([^"]+)"/g;
+                const inputColors = [];
+                let match;
+                while ((match = colorRegex.exec(inputSVG)) !== null) {
+                    inputColors.push(match[1]);
+                }
+                
+                // Create color map (simplify to 3 colors)
+                const rgbColors = inputColors.map(c => colorToRGB(c)).filter(c => c);
+                const clusters = kMeansCluster(rgbColors, 3, 20);
+                const colorMap = {};
+                inputColors.forEach((color, index) => {
+                    const rgb = colorToRGB(color);
+                    if (rgb) {
+                        let minDist = Infinity;
+                        let closestIdx = 0;
+                        for (let i = 0; i < clusters.length; i++) {
+                            const dist = colorDistance(rgb, clusters[i]);
+                            if (dist < minDist) {
+                                minDist = dist;
+                                closestIdx = i;
+                            }
+                        }
+                        const newColor = rgbToHex(clusters[closestIdx]);
+                        const normalizedColor = color.startsWith('#') ? color.toLowerCase() : rgbToHex(rgb).toLowerCase();
+                        colorMap[normalizedColor] = newColor;
+                    }
+                });
+
+                // Apply color map
+                const outputSVG = applyColorMap(inputSVG, colorMap);
+                
+                // Check if colors were replaced (not all black)
+                const hasBlack = outputSVG.includes('fill="#000000"') || outputSVG.includes('fill="#000"');
+                const hasColors = !hasBlack || outputSVG.match(/fill="#[0-9a-f]+"/g);
+                
+                if (hasColors && outputSVG !== inputSVG) {
+                    resultDiv.style.display = 'block';
+                    errorDiv.style.display = 'none';
+                    resultDiv.innerHTML = `<strong>✓ PASS</strong>: ${name}<br>` +
+                        `<strong>Input colors:</strong> ${inputColors.join(', ')}<br>` +
+                        `<strong>Output SVG:</strong><pre>${outputSVG.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`;
+                    return true;
+                } else {
+                    resultDiv.style.display = 'none';
+                    errorDiv.style.display = 'block';
+                    errorDiv.innerHTML = `<strong>✗ FAIL</strong>: ${name}<br>` +
+                        `Colors were not properly replaced. Output: <pre>${outputSVG.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`;
+                    return false;
+                }
+            } catch (e) {
+                resultDiv.style.display = 'none';
+                errorDiv.style.display = 'block';
+                errorDiv.innerHTML = `<strong>✗ ERROR</strong>: ${name}<br>` + e.message;
+                return false;
+            }
+        }
+
+        function runTest1() {
+            const inputSVG = `<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <rect x="10" y="10" width="50" height="50" fill="#ff0000"/>
+  <rect x="70" y="70" width="50" height="50" fill="#00ff00"/>
+  <circle cx="150" cy="100" r="30" fill="#0000ff"/>
+</svg>`;
+            runTest('Simple 3-color SVG', inputSVG, null, 
+                document.getElementById('test1-result'), 
+                document.getElementById('test1-error'));
+        }
+
+        function runTest2() {
+            const inputSVG = `<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <rect x="10" y="10" width="50" height="50" fill="#ff0000"/>
+  <rect x="70" y="70" width="50" height="50" fill="#00ff00"/>
+  <circle cx="150" cy="100" r="30" fill="#f00"/>
+</svg>`;
+            runTest('6-digit and 3-digit hex', inputSVG, null,
+                document.getElementById('test2-result'),
+                document.getElementById('test2-error'));
+        }
+
+        function runTest3() {
+            const inputSVG = `<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <rect x="10" y="10" width="50" height="50" fill="red"/>
+  <rect x="70" y="70" width="50" height="50" fill="green"/>
+  <circle cx="150" cy="100" r="30" fill="blue"/>
+</svg>`;
+            runTest('Named colors', inputSVG, null,
+                document.getElementById('test3-result'),
+                document.getElementById('test3-error'));
+        }
+    </script>
+</body>
+</html>
