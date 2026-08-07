@@ -1031,15 +1031,26 @@
                 return;
             }
             
-            // Get the rendered dimensions of the SVG to understand the coordinate system
-            const svgRect = svgContainer.getBoundingClientRect();
-            const svgRenderedWidth = svgRect.width;
-            const svgRenderedHeight = svgRect.height;
+            // Calculate a scale factor based on the SVG's coordinate system
+            // Get the SVG's viewBox or use its width/height
+            let svgCoordWidth = svgRenderedWidth;
+            let svgCoordHeight = svgRenderedHeight;
             
-            // Calculate a scale factor that fits the SVG nicely in the Three.js scene
-            // Use the larger dimension to determine scale
-            const maxRenderedDim = Math.max(svgRenderedWidth, svgRenderedHeight);
-            const scaleFactor = 5 / maxRenderedDim; // Scale so the largest dimension is ~5 units
+            const viewBox = svgContainer.getAttribute('viewBox');
+            if (viewBox) {
+                const vb = viewBox.split(/[\s,]+/);
+                if (vb.length >= 4) {
+                    svgCoordWidth = parseFloat(vb[2]);
+                    svgCoordHeight = parseFloat(vb[3]);
+                }
+            } else {
+                svgCoordWidth = parseFloat(svgContainer.getAttribute('width') || svgRect.width);
+                svgCoordHeight = parseFloat(svgContainer.getAttribute('height') || svgRect.height);
+            }
+            
+            // Calculate scale factor: make the larger dimension ~5 units in Three.js space
+            const maxCoordDim = Math.max(svgCoordWidth, svgCoordHeight);
+            const scaleFactor = 5 / maxCoordDim; // Scale so the largest dimension is ~5 units
             
             // Get all colored elements from the SVG
             const allElements = svgContainer.querySelectorAll('[fill], [style*="fill"]');
@@ -1060,9 +1071,14 @@
             const svgWidth = maxX - minX;
             const svgHeight = maxY - minY;
             
-            // Create a group to hold all 3D objects with Y flipped
+            // Create a group to hold all 3D objects with Y flipped and centered
             const group = new THREE.Group();
             group.scale.y = -1; // Flip Y: SVG Y-down to Three.js Y-up
+            
+            // Center the group by offsetting by the SVG center
+            group.position.x = -svgCenterX * scaleFactor;
+            group.position.y = -svgCenterY * scaleFactor;
+            
             scene.add(group);
             
             // Process all elements - extrude each by its color's height
@@ -1077,11 +1093,6 @@
                 }
                 
                 if (!fillColor || fillColor === 'none' || fillColor === 'inherit') return;
-                
-                // Get element's position in SVG user coordinates
-                const bbox = element.getBBox();
-                const elementCenterX = bbox.x + bbox.width / 2;
-                const elementCenterY = bbox.y + bbox.height / 2;
                 
                 // Normalize the color to hex for lookup
                 const hexColor = rgbToHex(colorToRGB(fillColor));
@@ -1107,7 +1118,7 @@
                     transparent: false
                 });
                 
-                // Create shape from element using a unit scale (we'll position and scale via mesh)
+                // Create shape from element using a unit scale (shapes have absolute SVG coords)
                 const shape = createShapeFromSVGElementNoFlip(element, 1.0);
                 if (shape) {
                     const extrudeSettings = {
@@ -1120,9 +1131,8 @@
                     // Scale the mesh uniformly
                     mesh.scale.set(scaleFactor, scaleFactor, scaleFactor);
                     
-                    // Position the mesh at the element's center (in SVG user coords) relative to SVG center
-                    mesh.position.x = (elementCenterX - svgCenterX) * scaleFactor;
-                    mesh.position.y = (elementCenterY - svgCenterY) * scaleFactor;
+                    // Shapes have absolute SVG coordinates, so no additional positioning needed
+                    // just set Z for the extrusion height
                     mesh.position.z = heightUnits / 2;
                     
                     group.add(mesh);
