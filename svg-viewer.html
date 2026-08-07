@@ -102,6 +102,8 @@
             <input type="number" id="color-count-input" min="1" max="256" value="4" />
             <button onclick="simplifyColors()">Simplify Colors</button>
             <button onclick="create3DStructure()" id="create-3d-btn" disabled>Create 3D Structure</button>
+            <button onclick="exportSimplifiedSVG()" id="export-svg-btn" disabled>Export Simplified SVG</button>
+            <button onclick="export3DImage()" id="export-3d-btn" disabled>Export 3D Image</button>
         </div>
         
         <div id="color-heights-container" style="margin-top: 20px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; display: none;">
@@ -140,6 +142,8 @@
         const colorPaletteText = document.getElementById('color-palette');
         const colorCountInput = document.getElementById('color-count-input');
         const create3DBtn = document.getElementById('create-3d-btn');
+        const exportSVGBtn = document.getElementById('export-svg-btn');
+        const export3DBtn = document.getElementById('export-3d-btn');
         const container3D = document.getElementById('3d-container');
         const colorHeightsContainer = document.getElementById('color-heights-container');
         const colorHeightsList = document.getElementById('color-heights-list');
@@ -250,6 +254,8 @@
                 colorHeightsList.innerHTML = '';
                 colorHeights = {};
                 create3DBtn.disabled = true;
+                exportSVGBtn.disabled = true;
+                export3DBtn.disabled = true;
             };
             reader.readAsText(file);
         }
@@ -274,24 +280,38 @@
             
             if (allColors.length <= 1) return;
             
-            const rgbColors = allColors.map(c => colorToRGB(c));
+            // Convert to RGB, filtering out any colors that can't be parsed
+            const validColors = [];
+            const rgbColors = [];
+            allColors.forEach(c => {
+                const rgb = colorToRGB(c);
+                if (rgb !== null) {
+                    validColors.push(c);
+                    rgbColors.push(rgb);
+                }
+            });
             
-            // If target is >= current colors, no need to simplify
+            // If target is >= current colors or we have no valid colors, no need to simplify
+            if (rgbColors.length <= 1) {
+                alert('Not enough valid colors to simplify');
+                return;
+            }
             if (targetCount >= rgbColors.length) {
-                alert('Target color count is not less than current colors');
+                alert(`Target color count (${targetCount}) is not less than valid colors (${rgbColors.length})`);
                 return;
             }
             
-            // Cluster colors using weighted k-means
-            const clusters = weightedKMeansCluster(rgbColors, weights, targetCount, 20);
+            // Cluster colors using standard k-means
+            const clusters = kMeansCluster(rgbColors, targetCount, 20);
             
-            // Create color mapping
+            // Create color mapping - normalize all keys to hex for consistency
             colorMap = {};
-            allColors.forEach((color, index) => {
+            validColors.forEach((color, index) => {
                 const rgb = rgbColors[index];
                 const closestCluster = findClosestCluster(rgb, clusters);
                 const newColor = rgbToHex(clusters[closestCluster]);
-                colorMap[color] = newColor;
+                const normalizedColor = color.startsWith('#') ? color.toLowerCase() : rgbToHex(rgb).toLowerCase();
+                colorMap[normalizedColor] = newColor;
             });
             
             // Apply the color replacements to the SVG
@@ -310,11 +330,11 @@
             colorHeights = {};
             colorHeightsList.innerHTML = newColors.map((color, index) => {
                 const colorHex = rgbToHex(colorToRGB(color));
-                colorHeights[color] = 1; // Default height: 1mm
+                colorHeights[color] = 2; // Default height: 2mm
                 return `
                     <div style="display: flex; align-items: center; margin: 5px 0; gap: 10px;">
-                        <span style="background:${color}; color:${getContrastColor(color)}; padding:2px 6px; border-radius:3px; min-width: 60px;">${color}</span>
-                        <input type="number" value="1" min="0.1" step="0.1" 
+                        <span style="background:${color}; color:${getContrastColor(color)}; padding:2px 6px; border-radius:3px; min-width: 60px;">${colorHex}</span>
+                        <input type="number" value="2" min="0.1" step="0.1" 
                                onchange="setColorHeight('${color}', this.value)" 
                                style="width: 60px;" /> mm
                     </div>
@@ -322,37 +342,48 @@
             }).join('');
             colorHeightsContainer.style.display = 'block';
             
-            // Enable the 3D button
+            // Enable the 3D and export buttons
             create3DBtn.disabled = false;
+            exportSVGBtn.disabled = false;
         }
 
         // Count color frequencies in SVG
         function countColorsInSVG(svgContent) {
             const counts = {};
-            
-            // Match hex colors
-            const hexRegex = /#([0-9a-fA-F]{3,8})/g;
-            let match;
-            while ((match = hexRegex.exec(svgContent)) !== null) {
-                const color = '#' + match[1];
-                counts[color] = (counts[color] || 0) + 1;
+            const addColor = (colorStr) => {
+                try {
+                    const rgb = colorToRGB(colorStr);
+                    if (rgb) {
+                        const hex = rgbToHex(rgb).toLowerCase();
+                        counts[hex] = (counts[hex] || 0) + 1;
+                    }
+                } catch (e) {}
+            };
+            const colorAttributes = ['fill', 'stroke', 'stop-color', 'flood-color', 'lighting-color', 'color'];
+            for (const attr of colorAttributes) {
+                const attrRegex = new RegExp(`\\b${attr}\\b\\s*=\\s*(?:["']([^"']*)["']|([^"' >]+))`, 'gi');
+                let match;
+                while ((match = attrRegex.exec(svgContent)) !== null) {
+                    const value = match[1] || match[2];
+                    if (value && value !== 'none' && value !== 'inherit' && value !== 'currentColor') {
+                        if (value.startsWith('url(') || value.startsWith('URL(')) continue;
+                        addColor(value);
+                    }
+                }
             }
-            
-            // Match rgb/rgba
-            const rgbRegex = /(?:rgb|rgba)\([\s]*(\d+)[\s]*,[\s]*(\d+)[\s]*,[\s]*(\d+)/g;
-            while ((match = rgbRegex.exec(svgContent)) !== null) {
-                const color = `rgb(${match[1]}, ${match[2]}, ${match[3]})`;
-                counts[color] = (counts[color] || 0) + 1;
+            const styleRegex = /style\s*=\s*["']([^"']*)["']/gi;
+            let styleMatch;
+            while ((styleMatch = styleRegex.exec(svgContent)) !== null) {
+                const styleValue = styleMatch[1];
+                const colorProperties = ['fill', 'stroke', 'stop-color', 'flood-color', 'lighting-color', 'color'];
+                for (const prop of colorProperties) {
+                    const propRegex = new RegExp(`\\b${prop}\\b\\s*:\\s*([^;]+)`, 'i');
+                    const propMatch = styleValue.match(propRegex);
+                    if (propMatch) {
+                        addColor(propMatch[1]);
+                    }
+                }
             }
-            
-            // Match named colors
-            const namedColors = ['red', 'green', 'blue', 'yellow', 'cyan', 'magenta', 'black', 'white', 'gray', 'grey', 'orange', 'purple', 'pink', 'brown', 'maroon', 'navy', 'teal', 'lime', 'aqua', 'fuchsia', 'silver', 'gold'];
-            const namedRegex = new RegExp('\\b(' + namedColors.join('|') + ')\\b', 'gi');
-            while ((match = namedRegex.exec(svgContent)) !== null) {
-                const color = match[1].toLowerCase();
-                counts[color] = (counts[color] || 0) + 1;
-            }
-            
             return counts;
         }
 
@@ -470,22 +501,30 @@
             // Extract all colors with their frequencies
             const colorCounts = countColorsInSVG(originalSVGContent);
             const allColors = Object.keys(colorCounts);
-            const weights = allColors.map(c => colorCounts[c]);
             
             if (allColors.length <= 1) {
                 colorPaletteText.textContent = '';
                 return;
             }
             
-            const rgbColors = allColors.map(c => colorToRGB(c));
+            // Convert to RGB, filtering out any colors that can't be parsed
+            const validColors = [];
+            const rgbColors = [];
+            allColors.forEach(c => {
+                const rgb = colorToRGB(c);
+                if (rgb !== null) {
+                    validColors.push(c);
+                    rgbColors.push(rgb);
+                }
+            });
             
-            if (targetCount >= rgbColors.length) {
+            if (rgbColors.length <= 1 || targetCount >= rgbColors.length) {
                 colorPaletteText.textContent = '';
                 return;
             }
             
-            // Cluster colors using weighted k-means
-            const clusters = weightedKMeansCluster(rgbColors, weights, targetCount, 20);
+            // Cluster colors using standard k-means
+            const clusters = kMeansCluster(rgbColors, targetCount, 20);
             
             // Get the resulting palette colors
             const paletteColors = clusters.map(c => rgbToHex(c));
@@ -1039,21 +1078,47 @@
         function applyColorMap(svgContent, colorMap) {
             let result = svgContent;
             
-            // Replace hex colors
-            for (const [oldColor, newColor] of Object.entries(colorMap)) {
-                if (oldColor.startsWith('#')) {
-                    const oldHex = oldColor.toLowerCase();
-                    const newHex = newColor.toLowerCase();
-                    const regex = new RegExp(oldHex, 'gi');
-                    result = result.replace(regex, newHex);
+            // Step 1: Convert all color formats to normalized 6-digit lowercase hex
+            // Convert rgb(r,g,b) to #rrggbb
+            result = result.replace(/rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)/gi, (m, r, g, b) => {
+                return rgbToHex({r: parseInt(r), g: parseInt(g), b: parseInt(b)});
+            });
+            result = result.replace(/rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*(?:[01]?\.\d*|\.\d+))?\s*\)/gi, (m, r, g, b) => {
+                return rgbToHex({r: parseInt(r), g: parseInt(g), b: parseInt(b)});
+            });
+            result = result.replace(/\b(red|green|lime|blue|yellow|cyan|magenta|black|white|gray|grey|silver|maroon|navy|teal|purple|orange|pink|brown|aqua|fuchsia|gold)\b/gi, (m, name) => {
+                const map = {
+                    'red':'#ff0000','green':'#008000','lime':'#00ff00','blue':'#0000ff',
+                    'yellow':'#ffff00','cyan':'#00ffff','magenta':'#ff00ff','black':'#000000',
+                    'white':'#ffffff','gray':'#808080','grey':'#808080','silver':'#c0c0c0',
+                    'maroon':'#800000','navy':'#000080','teal':'#008080','purple':'#800080',
+                    'orange':'#ffa500','pink':'#ffc0cb','brown':'#a52a2a','aqua':'#00ffff',
+                    'fuchsia':'#ff00ff','gold':'#ffd700'
+                };
+                return map[name.toLowerCase()] || m;
+            });
+            // Normalize all hex to 6-digit lowercase
+            result = result.replace(/#([0-9a-f]{8})/gi, (m, p1) => '#' + p1.substring(0,6).toLowerCase());
+            result = result.replace(/#([0-9a-f]{6})/gi, (m, p1) => '#'+p1.toLowerCase());
+            result = result.replace(/#([0-9a-f]{4})/gi, (m, p1) => {
+                const r=p1[0].toLowerCase(),g=p1[1].toLowerCase(),b=p1[2].toLowerCase();
+                return '#'+r+r+g+g+b+b;
+            });
+            result = result.replace(/#([0-9a-f]{3})/gi, (m, p1) => {
+                const r=p1[0].toLowerCase(),g=p1[1].toLowerCase(),b=p1[2].toLowerCase();
+                return '#'+r+r+g+g+b+b;
+            });
+            
+            // Step 2: Apply color map using word boundaries
+            for (const [oldHex, newHex] of Object.entries(colorMap)) {
+                if (oldHex.startsWith('#')) {
+                    const oldNorm = oldHex.toLowerCase();
+                    const newNorm = newHex.toLowerCase();
+                    result = result.replace(
+                        new RegExp('(?<![0-9a-fA-F])' + oldNorm + '(?![0-9a-fA-F])', 'gi'),
+                        newNorm
+                    );
                 }
-                // Replace named colors
-                else if (/^[a-z]+$/.test(oldColor)) {
-                    const regex = new RegExp('\\b' + oldColor + '\\b', 'gi');
-                    result = result.replace(regex, newColor);
-                }
-                // Replace rgb/rgba - this is more complex, skip for now
-                // as it would require parsing the full rgb() expression
             }
             
             return result;
@@ -1284,6 +1349,8 @@
             colorHeightsList.innerHTML = '';
             colorHeights = {};
             create3DBtn.disabled = true;
+            exportSVGBtn.disabled = true;
+            export3DBtn.disabled = true;
         }
 
         // Format file size
