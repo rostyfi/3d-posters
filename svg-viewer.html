@@ -1098,12 +1098,18 @@
                 return map[name.toLowerCase()] || m;
             });
             // Normalize all hex to 6-digit lowercase
+            // Handle 8-digit (RRGGBBAA) -> RRGGBB
             result = result.replace(/#([0-9a-f]{8})/gi, (m, p1) => '#' + p1.substring(0,6).toLowerCase());
+            // Handle 7-digit (malformed) -> RRGGBB (take first 6)
+            result = result.replace(/#([0-9a-f]{7})/gi, (m, p1) => '#' + p1.substring(0,6).toLowerCase());
+            // Handle 6-digit
             result = result.replace(/#([0-9a-f]{6})/gi, (m, p1) => '#'+p1.toLowerCase());
+            // Handle 4-digit (RGBA) -> RRGGBB
             result = result.replace(/#([0-9a-f]{4})/gi, (m, p1) => {
                 const r=p1[0].toLowerCase(),g=p1[1].toLowerCase(),b=p1[2].toLowerCase();
                 return '#'+r+r+g+g+b+b;
             });
+            // Handle 3-digit (RGB) -> RRGGBB
             result = result.replace(/#([0-9a-f]{3})/gi, (m, p1) => {
                 const r=p1[0].toLowerCase(),g=p1[1].toLowerCase(),b=p1[2].toLowerCase();
                 return '#'+r+r+g+g+b+b;
@@ -1237,7 +1243,13 @@
                     r = parseInt(hex.substring(0, 2), 16);
                     g = parseInt(hex.substring(2, 4), 16);
                     b = parseInt(hex.substring(4, 6), 16);
-                } else if (hex.length === 8) {
+                } else if (hex.length === 7) {
+                    // 7-digit hex (malformed, treat as 6-digit by dropping last char)
+                    r = parseInt(hex.substring(0, 2), 16);
+                    g = parseInt(hex.substring(2, 4), 16);
+                    b = parseInt(hex.substring(4, 6), 16);
+                } else if (hex.length >= 8) {
+                    // 8-digit or longer (RRGGBBAA or malformed), take first 6 for RGB
                     r = parseInt(hex.substring(0, 2), 16);
                     g = parseInt(hex.substring(2, 4), 16);
                     b = parseInt(hex.substring(4, 6), 16);
