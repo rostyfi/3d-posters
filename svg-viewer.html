@@ -530,6 +530,38 @@
                 return null;
             }
         }
+        
+        // Create a Three.js Shape from an SVG element WITHOUT Y flipping
+        function createShapeFromSVGElementNoFlip(element, scale) {
+            const tagName = element.tagName.toLowerCase();
+            
+            try {
+                switch (tagName) {
+                    case 'path':
+                        return createShapeFromPathNoFlip(element.getAttribute('d') || '', scale);
+                    case 'rect':
+                        return createShapeFromRectNoFlip(element, scale);
+                    case 'circle':
+                        return createShapeFromCircleNoFlip(element, scale);
+                    case 'ellipse':
+                        return createShapeFromEllipseNoFlip(element, scale);
+                    case 'polygon':
+                        return createShapeFromPolygonNoFlip(element.getAttribute('points') || '', scale);
+                    case 'polyline':
+                        return createShapeFromPolygonNoFlip(element.getAttribute('points') || '', scale, true);
+                    case 'line':
+                        return null;
+                    case 'g':
+                        return createShapeFromGroupNoFlip(element, scale);
+                    default:
+                        console.warn(`Unsupported SVG element: ${tagName}`);
+                        return null;
+                }
+            } catch (e) {
+                console.error(`Error creating shape from ${tagName}:`, e);
+                return null;
+            }
+        }
 
         function createShapeFromPath(d, scale) {
             const shape = new THREE.Shape();
@@ -738,6 +770,181 @@
             }
             return null;
         }
+        
+        function createShapeFromPathNoFlip(d, scale) {
+            const shape = new THREE.Shape();
+            let currentX = 0, currentY = 0;
+            let startX = 0, startY = 0;
+            let controlX = 0, controlY = 0;
+            let prevControlX = 0, prevControlY = 0;
+            
+            const commands = parseSVGPath(d);
+            
+            commands.forEach(cmd => {
+                const type = cmd.type.toUpperCase();
+                const points = cmd.points || [];
+                
+                switch (type) {
+                    case 'M':
+                        if (points.length >= 2) {
+                            currentX = points[0] * scale;
+                            currentY = points[1] * scale;
+                            startX = currentX; startY = currentY;
+                            shape.moveTo(currentX, currentY);
+                        }
+                        break;
+                    case 'L':
+                        for (let i = 0; i < points.length; i += 2) {
+                            currentX = points[i] * scale;
+                            currentY = points[i + 1] * scale;
+                            shape.lineTo(currentX, currentY);
+                        }
+                        break;
+                    case 'H':
+                        for (let i = 0; i < points.length; i++) {
+                            currentX = points[i] * scale;
+                            shape.lineTo(currentX, currentY);
+                        }
+                        break;
+                    case 'V':
+                        for (let i = 0; i < points.length; i++) {
+                            currentY = points[i] * scale;
+                            shape.lineTo(currentX, currentY);
+                        }
+                        break;
+                    case 'C':
+                        for (let i = 0; i < points.length; i += 6) {
+                            const x1 = points[i] * scale, y1 = points[i + 1] * scale;
+                            const x2 = points[i + 2] * scale, y2 = points[i + 3] * scale;
+                            const x = points[i + 4] * scale, y = points[i + 5] * scale;
+                            shape.bezierCurveTo(x1, y1, x2, y2, x, y);
+                            currentX = x; currentY = y;
+                            prevControlX = x2; prevControlY = y2;
+                        }
+                        break;
+                    case 'S':
+                        for (let i = 0; i < points.length; i += 4) {
+                            const x2 = points[i] * scale, y2 = points[i + 1] * scale;
+                            const x = points[i + 2] * scale, y = points[i + 3] * scale;
+                            const x1 = 2 * currentX - prevControlX;
+                            const y1 = 2 * currentY - prevControlY;
+                            shape.bezierCurveTo(x1, y1, x2, y2, x, y);
+                            currentX = x; currentY = y;
+                            prevControlX = x2; prevControlY = y2;
+                        }
+                        break;
+                    case 'Q':
+                        for (let i = 0; i < points.length; i += 4) {
+                            const x1 = points[i] * scale, y1 = points[i + 1] * scale;
+                            const x = points[i + 2] * scale, y = points[i + 3] * scale;
+                            shape.quadraticCurveTo(x1, y1, x, y);
+                            currentX = x; currentY = y;
+                            prevControlX = x1; prevControlY = y1;
+                        }
+                        break;
+                    case 'T':
+                        for (let i = 0; i < points.length; i += 2) {
+                            const x = points[i] * scale, y = points[i + 1] * scale;
+                            const x1 = 2 * currentX - prevControlX;
+                            const y1 = 2 * currentY - prevControlY;
+                            shape.quadraticCurveTo(x1, y1, x, y);
+                            currentX = x; currentY = y;
+                            prevControlX = x1; prevControlY = y1;
+                        }
+                        break;
+                    case 'A':
+                        for (let i = 0; i < points.length; i += 7) {
+                            const x = points[i + 5] * scale, y = points[i + 6] * scale;
+                            shape.lineTo(x, y);
+                            currentX = x; currentY = y;
+                        }
+                        break;
+                    case 'Z':
+                        shape.lineTo(startX, startY);
+                        currentX = startX; currentY = startY;
+                        break;
+                }
+            });
+            return shape;
+        }
+        
+        function createShapeFromRectNoFlip(element, scale) {
+            const x = parseFloat(element.getAttribute('x') || '0') * scale;
+            const y = parseFloat(element.getAttribute('y') || '0') * scale;
+            const width = parseFloat(element.getAttribute('width') || '0') * scale;
+            const height = parseFloat(element.getAttribute('height') || '0') * scale;
+            const shape = new THREE.Shape();
+            shape.moveTo(x, y);
+            shape.lineTo(x + width, y);
+            shape.lineTo(x + width, y + height);
+            shape.lineTo(x, y + height);
+            shape.lineTo(x, y);
+            return shape;
+        }
+        
+        function createShapeFromCircleNoFlip(element, scale) {
+            const cx = parseFloat(element.getAttribute('cx') || '0') * scale;
+            const cy = parseFloat(element.getAttribute('cy') || '0') * scale;
+            const r = parseFloat(element.getAttribute('r') || '0') * scale;
+            const shape = new THREE.Shape();
+            const segments = 16;
+            shape.moveTo(cx + r, cy);
+            for (let i = 1; i <= segments; i++) {
+                const theta = (i / segments) * Math.PI * 2;
+                const x = cx + r * Math.cos(theta);
+                const y = cy + r * Math.sin(theta);
+                const thetaMid = ((i - 0.5) / segments) * Math.PI * 2;
+                const mx = cx + r * Math.cos(thetaMid);
+                const my = cy + r * Math.sin(thetaMid);
+                shape.quadraticCurveTo(mx, my, x, y);
+            }
+            return shape;
+        }
+        
+        function createShapeFromEllipseNoFlip(element, scale) {
+            const cx = parseFloat(element.getAttribute('cx') || '0') * scale;
+            const cy = parseFloat(element.getAttribute('cy') || '0') * scale;
+            const rx = parseFloat(element.getAttribute('rx') || '0') * scale;
+            const ry = parseFloat(element.getAttribute('ry') || '0') * scale;
+            const shape = new THREE.Shape();
+            const segments = 16;
+            shape.moveTo(cx + rx, cy);
+            for (let i = 1; i <= segments; i++) {
+                const theta = (i / segments) * Math.PI * 2;
+                const x = cx + rx * Math.cos(theta);
+                const y = cy + ry * Math.sin(theta);
+                const thetaMid = ((i - 0.5) / segments) * Math.PI * 2;
+                const mx = cx + rx * Math.cos(thetaMid);
+                const my = cy + ry * Math.sin(thetaMid);
+                shape.quadraticCurveTo(mx, my, x, y);
+            }
+            return shape;
+        }
+        
+        function createShapeFromPolygonNoFlip(pointsStr, scale, isPolyline = false) {
+            const points = parseSVGPoints(pointsStr);
+            if (points.length < 2) return null;
+            const shape = new THREE.Shape();
+            const first = points[0];
+            shape.moveTo(first.x * scale, first.y * scale);
+            for (let i = 1; i < points.length; i++) {
+                const pt = points[i];
+                shape.lineTo(pt.x * scale, pt.y * scale);
+            }
+            if (!isPolyline) {
+                shape.lineTo(first.x * scale, first.y * scale);
+            }
+            return shape;
+        }
+        
+        function createShapeFromGroupNoFlip(element, scale) {
+            const children = element.children;
+            for (let i = 0; i < children.length; i++) {
+                const childShape = createShapeFromSVGElementNoFlip(children[i], scale);
+                if (childShape) return childShape;
+            }
+            return null;
+        }
 
         // Initialize Three.js (lazy initialization)
         function initThreeJS() {
@@ -824,19 +1031,35 @@
                 return;
             }
             
-            // Get SVG dimensions for scaling
-            const svgRect = svgContainer.getBoundingClientRect();
-            const svgWidth = Math.max(svgRect.width, 100);
-            const svgHeight = Math.max(svgRect.height, 100);
             const scaleFactor = 0.01; // Scale down to Three.js units
             
             // Get all colored elements from the SVG
             const allElements = svgContainer.querySelectorAll('[fill], [style*="fill"]');
             
-            // Group elements by their fill color (normalized to hex)
-            const elementsByColor = {};
-            const colorToHex = {};
+            // First pass: find the overall bounding box in SVG coordinates
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
             
+            allElements.forEach(element => {
+                const bbox = element.getBBox();
+                minX = Math.min(minX, bbox.x);
+                minY = Math.min(minY, bbox.y);
+                maxX = Math.max(maxX, bbox.x + bbox.width);
+                maxY = Math.max(maxY, bbox.y + bbox.height);
+            });
+            
+            const svgCenterX = (minX + maxX) / 2;
+            const svgCenterY = (minY + maxY) / 2;
+            const svgWidth = maxX - minX;
+            const svgHeight = maxY - minY;
+            
+            // Create a group to hold all 3D objects with Y flipped
+            const group = new THREE.Group();
+            group.scale.y = -1; // Flip Y: SVG Y-down to Three.js Y-up
+            scene.add(group);
+            
+            // Process all elements - extrude each by its color's height
+            // Shapes will be created with absolute SVG coordinates (scaled)
+            // We'll center the entire group after creating all meshes
             allElements.forEach(element => {
                 let fillColor = element.getAttribute('fill') || '';
                 const style = element.getAttribute('style') || '';
@@ -849,82 +1072,60 @@
                 
                 if (!fillColor || fillColor === 'none' || fillColor === 'inherit') return;
                 
-                // Normalize the color to hex
+                // Normalize the color to hex for lookup
                 const hexColor = rgbToHex(colorToRGB(fillColor));
                 
-                if (!elementsByColor[hexColor]) {
-                    elementsByColor[hexColor] = [];
-                    colorToHex[hexColor] = fillColor; // Store original color string
+                // Find the original color string from the palette
+                const colors = extractColorsFromSVG(simplifiedSVGContent);
+                let matchedColor = null;
+                for (const color of colors) {
+                    const colorHex = rgbToHex(colorToRGB(color));
+                    if (colorHex === hexColor) {
+                        matchedColor = color;
+                        break;
+                    }
                 }
-                elementsByColor[hexColor].push(element);
-            });
-            
-            // Extract unique colors from simplified SVG (for ordering)
-            const colors = extractColorsFromSVG(simplifiedSVGContent);
-            const mmToUnits = 0.1;
-            const spacingUnits = 0.05;
-            
-            let totalZ = 0;
-            let currentZ = 0;
-            
-            // Process each color
-            colors.forEach((color, index) => {
-                const colorHex = rgbToHex(colorToRGB(color));
-                const elements = elementsByColor[colorHex] || [];
                 
-                const rgb = colorToRGB(color);
+                const heightMM = colorHeights[matchedColor] || 1;
+                const heightUnits = heightMM * 0.1; // mm to Three.js units
+                
+                const rgb = colorToRGB(fillColor);
                 const material = new THREE.MeshStandardMaterial({
                     color: new THREE.Color(rgb.r / 255, rgb.g / 255, rgb.b / 255),
                     side: THREE.DoubleSide,
                     transparent: false
                 });
                 
-                const heightMM = colorHeights[color] || 1;
-                const heightUnits = heightMM * mmToUnits;
-                
-                if (elements.length === 0) {
-                    // Fallback: create a small box for this color
-                    const geometry = new THREE.BoxGeometry(0.5, 0.5, heightUnits);
+                // Create shape WITH scaling but WITHOUT Y flipping
+                // The shape will have absolute SVG coordinates
+                const shape = createShapeFromSVGElementNoFlip(element, scaleFactor);
+                if (shape) {
+                    const extrudeSettings = {
+                        depth: heightUnits,
+                        bevelEnabled: false
+                    };
+                    const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
                     const mesh = new THREE.Mesh(geometry, material);
-                    mesh.position.set(0, 0, currentZ + heightUnits / 2);
-                    scene.add(mesh);
-                } else {
-                    // Create a group for this color's meshes
-                    const colorGroup = new THREE.Group();
                     
-                    elements.forEach(element => {
-                        const shape = createShapeFromSVGElement(element, scaleFactor);
-                        if (shape) {
-                            const extrudeSettings = {
-                                depth: heightUnits,
-                                bevelEnabled: false
-                            };
-                            const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-                            const mesh = new THREE.Mesh(geometry, material);
-                            
-                            // Center the mesh in X and Y
-                            geometry.computeBoundingBox();
-                            const bbox = geometry.boundingBox;
-                            mesh.position.x = -(bbox.max.x + bbox.min.x) / 2;
-                            mesh.position.y = -(bbox.max.y + bbox.min.y) / 2;
-                            mesh.position.z = currentZ + heightUnits / 2;
-                            
-                            colorGroup.add(mesh);
-                        }
-                    });
+                    // Position at Z only (height/2), X and Y are handled by the shape geometry
+                    mesh.position.z = heightUnits / 2;
                     
-                    if (colorGroup.children.length > 0) {
-                        scene.add(colorGroup);
-                    }
+                    group.add(mesh);
                 }
-                
-                currentZ += heightUnits + spacingUnits;
-                totalZ = currentZ;
             });
             
-            // Center camera based on total Z extent
-            camera.position.set(0, 0, Math.max(5, totalZ * 1.5));
-            camera.lookAt(0, 0, totalZ / 2);
+            // Center the group by offsetting it
+            // The shapes have absolute SVG coordinates, so we need to center them
+            group.position.x = -svgCenterX * scaleFactor;
+            group.position.y = -svgCenterY * scaleFactor;
+            
+            // Position camera to see the entire scene
+            const sceneWidth = svgWidth * scaleFactor;
+            const sceneHeight = svgHeight * scaleFactor;
+            const maxDim = Math.max(sceneWidth, sceneHeight);
+            const cameraDistance = maxDim * 2;
+            camera.position.set(0, 0, Math.max(5, cameraDistance));
+            camera.lookAt(0, 0, 0);
         }
 
         // Get contrasting text color for background
