@@ -1031,6 +1031,11 @@
                 return;
             }
             
+            // Get the rendered dimensions of the SVG
+            const svgRect = svgContainer.getBoundingClientRect();
+            const svgRenderedWidth = svgRect.width;
+            const svgRenderedHeight = svgRect.height;
+            
             // Calculate a scale factor based on the SVG's coordinate system
             // Get the SVG's viewBox or use its width/height
             let svgCoordWidth = svgRenderedWidth;
@@ -1044,8 +1049,8 @@
                     svgCoordHeight = parseFloat(vb[3]);
                 }
             } else {
-                svgCoordWidth = parseFloat(svgContainer.getAttribute('width') || svgRect.width);
-                svgCoordHeight = parseFloat(svgContainer.getAttribute('height') || svgRect.height);
+                svgCoordWidth = parseFloat(svgContainer.getAttribute('width') || svgRenderedWidth);
+                svgCoordHeight = parseFloat(svgContainer.getAttribute('height') || svgRenderedHeight);
             }
             
             // Calculate scale factor: make the larger dimension ~5 units in Three.js space
