@@ -1031,12 +1031,20 @@
                 return;
             }
             
-            const scaleFactor = 0.01; // Scale down to Three.js units
+            // Get the rendered dimensions of the SVG to understand the coordinate system
+            const svgRect = svgContainer.getBoundingClientRect();
+            const svgRenderedWidth = svgRect.width;
+            const svgRenderedHeight = svgRect.height;
+            
+            // Calculate a scale factor that fits the SVG nicely in the Three.js scene
+            // Use the larger dimension to determine scale
+            const maxRenderedDim = Math.max(svgRenderedWidth, svgRenderedHeight);
+            const scaleFactor = 5 / maxRenderedDim; // Scale so the largest dimension is ~5 units
             
             // Get all colored elements from the SVG
             const allElements = svgContainer.querySelectorAll('[fill], [style*="fill"]');
             
-            // First pass: find the overall bounding box in SVG coordinates
+            // First pass: find the overall bounding box in SVG user coordinates
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
             
             allElements.forEach(element => {
@@ -1058,8 +1066,6 @@
             scene.add(group);
             
             // Process all elements - extrude each by its color's height
-            // Shapes will be created with absolute SVG coordinates (scaled)
-            // We'll center the entire group after creating all meshes
             allElements.forEach(element => {
                 let fillColor = element.getAttribute('fill') || '';
                 const style = element.getAttribute('style') || '';
@@ -1071,6 +1077,11 @@
                 }
                 
                 if (!fillColor || fillColor === 'none' || fillColor === 'inherit') return;
+                
+                // Get element's position in SVG user coordinates
+                const bbox = element.getBBox();
+                const elementCenterX = bbox.x + bbox.width / 2;
+                const elementCenterY = bbox.y + bbox.height / 2;
                 
                 // Normalize the color to hex for lookup
                 const hexColor = rgbToHex(colorToRGB(fillColor));
@@ -1096,9 +1107,8 @@
                     transparent: false
                 });
                 
-                // Create shape WITH scaling but WITHOUT Y flipping
-                // The shape will have absolute SVG coordinates
-                const shape = createShapeFromSVGElementNoFlip(element, scaleFactor);
+                // Create shape from element using a unit scale (we'll position and scale via mesh)
+                const shape = createShapeFromSVGElementNoFlip(element, 1.0);
                 if (shape) {
                     const extrudeSettings = {
                         depth: heightUnits,
@@ -1107,24 +1117,25 @@
                     const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
                     const mesh = new THREE.Mesh(geometry, material);
                     
-                    // Position at Z only (height/2), X and Y are handled by the shape geometry
+                    // Scale the mesh uniformly
+                    mesh.scale.set(scaleFactor, scaleFactor, scaleFactor);
+                    
+                    // Position the mesh at the element's center (in SVG user coords) relative to SVG center
+                    mesh.position.x = (elementCenterX - svgCenterX) * scaleFactor;
+                    mesh.position.y = (elementCenterY - svgCenterY) * scaleFactor;
                     mesh.position.z = heightUnits / 2;
                     
                     group.add(mesh);
                 }
             });
             
-            // Center the group by offsetting it
-            // The shapes have absolute SVG coordinates, so we need to center them
-            group.position.x = -svgCenterX * scaleFactor;
-            group.position.y = -svgCenterY * scaleFactor;
-            
             // Position camera to see the entire scene
+            // The scene is scaled so max dimension is ~5 units, so camera at ~10 units should work
             const sceneWidth = svgWidth * scaleFactor;
             const sceneHeight = svgHeight * scaleFactor;
             const maxDim = Math.max(sceneWidth, sceneHeight);
-            const cameraDistance = maxDim * 2;
-            camera.position.set(0, 0, Math.max(5, cameraDistance));
+            const cameraDistance = Math.max(10, maxDim * 2);
+            camera.position.set(0, 0, cameraDistance);
             camera.lookAt(0, 0, 0);
         }
 
