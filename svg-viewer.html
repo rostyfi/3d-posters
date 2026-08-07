@@ -839,6 +839,23 @@
             return { x: 0, y: 0, width, height };
         }
 
+        // Get the absolute position and size of an SVG element relative to its SVG container
+        function getElementBounds(element, svgContainer) {
+            try {
+                // Use getBBox() to get the element's bounding box in user units
+                const bbox = element.getBBox();
+                return {
+                    x: bbox.x,
+                    y: bbox.y,
+                    width: bbox.width,
+                    height: bbox.height
+                };
+            } catch (e) {
+                // Fallback for elements that don't support getBBox (like groups without children)
+                return { x: 0, y: 0, width: 0, height: 0 };
+            }
+        }
+
         // Create 3D structure from simplified SVG
         function create3DStructure() {
             if (!simplifiedSVGContent) {
@@ -962,6 +979,13 @@
                             const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
                             const mesh = new THREE.Mesh(geometry, material);
                             
+                            // Flip Y coordinates to convert from SVG (Y-down) to Three.js (Y-up)
+                            const position = geometry.attributes.position;
+                            for (let i = 0; i < position.count; i++) {
+                                position.setY(i, -position.getY(i));
+                            }
+                            position.needsUpdate = true;
+                            
                             // Position at the Z level for this color
                             mesh.position.z = currentZ + heightUnits / 2;
                             
@@ -970,7 +994,6 @@
                     });
                     
                     if (colorGroup.children.length > 0) {
-                        colorGroup.rotation.x = Math.PI; // Flip Y-axis
                         mainGroup.add(colorGroup);
                     }
                 }
