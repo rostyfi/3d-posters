@@ -1094,6 +1094,9 @@
                 
                 if (!fillColor || fillColor === 'none' || fillColor === 'inherit') return;
                 
+                // Get the element's bounding box (accounts for transforms)
+                const bbox = element.getBBox();
+                
                 // Normalize the color to hex for lookup
                 const hexColor = rgbToHex(colorToRGB(fillColor));
                 
@@ -1118,25 +1121,30 @@
                     transparent: false
                 });
                 
-                // Create shape from element using a unit scale (shapes have absolute SVG coords)
-                const shape = createShapeFromSVGElementNoFlip(element, 1.0);
-                if (shape) {
-                    const extrudeSettings = {
-                        depth: heightUnits,
-                        bevelEnabled: false
-                    };
-                    const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-                    const mesh = new THREE.Mesh(geometry, material);
-                    
-                    // Scale the mesh uniformly
-                    mesh.scale.set(scaleFactor, scaleFactor, scaleFactor);
-                    
-                    // Shapes have absolute SVG coordinates, so no additional positioning needed
-                    // just set Z for the extrusion height
-                    mesh.position.z = heightUnits / 2;
-                    
-                    group.add(mesh);
-                }
+                // Create a simple rectangle shape for this element's bounding box
+                const shape = new THREE.Shape();
+                shape.moveTo(0, 0);
+                shape.lineTo(bbox.width, 0);
+                shape.lineTo(bbox.width, bbox.height);
+                shape.lineTo(0, bbox.height);
+                shape.lineTo(0, 0);
+                
+                const extrudeSettings = {
+                    depth: heightUnits,
+                    bevelEnabled: false
+                };
+                const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+                const mesh = new THREE.Mesh(geometry, material);
+                
+                // Scale and position the mesh
+                mesh.scale.set(scaleFactor, scaleFactor, scaleFactor);
+                
+                // Position at the element's top-left corner in SVG coords
+                mesh.position.x = bbox.x * scaleFactor;
+                mesh.position.y = bbox.y * scaleFactor;
+                mesh.position.z = heightUnits / 2;
+                
+                group.add(mesh);
             });
             
             // Position camera to see the entire scene
