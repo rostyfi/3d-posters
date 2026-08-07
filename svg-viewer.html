@@ -1114,8 +1114,10 @@
                 if (oldHex.startsWith('#')) {
                     const oldNorm = oldHex.toLowerCase();
                     const newNorm = newHex.toLowerCase();
+                    // Use negative lookahead at end to avoid partial matches
+                    // (e.g., #000000 matching inside #00000000)
                     result = result.replace(
-                        new RegExp('(?<![0-9a-fA-F])' + oldNorm + '(?![0-9a-fA-F])', 'gi'),
+                        new RegExp(oldNorm + '(?![0-9a-fA-F])', 'gi'),
                         newNorm
                     );
                 }
