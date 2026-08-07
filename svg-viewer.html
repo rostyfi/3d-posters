@@ -565,7 +565,7 @@
                     case 'M':
                         if (points.length >= 2) {
                             currentX = points[0] * scale;
-                            currentY = points[1] * scale;
+                            currentY = -points[1] * scale; // Flip Y for Three.js
                             startX = currentX; startY = currentY;
                             shape.moveTo(currentX, currentY);
                         }
@@ -573,7 +573,7 @@
                     case 'L':
                         for (let i = 0; i < points.length; i += 2) {
                             currentX = points[i] * scale;
-                            currentY = points[i + 1] * scale;
+                            currentY = -points[i + 1] * scale; // Flip Y for Three.js
                             shape.lineTo(currentX, currentY);
                         }
                         break;
@@ -585,15 +585,15 @@
                         break;
                     case 'V':
                         for (let i = 0; i < points.length; i++) {
-                            currentY = points[i] * scale;
+                            currentY = -points[i] * scale; // Flip Y for Three.js
                             shape.lineTo(currentX, currentY);
                         }
                         break;
                     case 'C':
                         for (let i = 0; i < points.length; i += 6) {
-                            const x1 = points[i] * scale, y1 = points[i + 1] * scale;
-                            const x2 = points[i + 2] * scale, y2 = points[i + 3] * scale;
-                            const x = points[i + 4] * scale, y = points[i + 5] * scale;
+                            const x1 = points[i] * scale, y1 = -points[i + 1] * scale; // Flip Y
+                            const x2 = points[i + 2] * scale, y2 = -points[i + 3] * scale; // Flip Y
+                            const x = points[i + 4] * scale, y = -points[i + 5] * scale; // Flip Y
                             shape.bezierCurveTo(x1, y1, x2, y2, x, y);
                             currentX = x; currentY = y;
                             prevControlX = x2; prevControlY = y2;
@@ -601,8 +601,8 @@
                         break;
                     case 'S':
                         for (let i = 0; i < points.length; i += 4) {
-                            const x2 = points[i] * scale, y2 = points[i + 1] * scale;
-                            const x = points[i + 2] * scale, y = points[i + 3] * scale;
+                            const x2 = points[i] * scale, y2 = -points[i + 1] * scale; // Flip Y
+                            const x = points[i + 2] * scale, y = -points[i + 3] * scale; // Flip Y
                             const x1 = 2 * currentX - prevControlX;
                             const y1 = 2 * currentY - prevControlY;
                             shape.bezierCurveTo(x1, y1, x2, y2, x, y);
@@ -612,8 +612,8 @@
                         break;
                     case 'Q':
                         for (let i = 0; i < points.length; i += 4) {
-                            const x1 = points[i] * scale, y1 = points[i + 1] * scale;
-                            const x = points[i + 2] * scale, y = points[i + 3] * scale;
+                            const x1 = points[i] * scale, y1 = -points[i + 1] * scale; // Flip Y
+                            const x = points[i + 2] * scale, y = -points[i + 3] * scale; // Flip Y
                             shape.quadraticCurveTo(x1, y1, x, y);
                             currentX = x; currentY = y;
                             prevControlX = x1; prevControlY = y1;
@@ -621,7 +621,7 @@
                         break;
                     case 'T':
                         for (let i = 0; i < points.length; i += 2) {
-                            const x = points[i] * scale, y = points[i + 1] * scale;
+                            const x = points[i] * scale, y = -points[i + 1] * scale; // Flip Y
                             const x1 = 2 * currentX - prevControlX;
                             const y1 = 2 * currentY - prevControlY;
                             shape.quadraticCurveTo(x1, y1, x, y);
@@ -631,7 +631,7 @@
                         break;
                     case 'A':
                         for (let i = 0; i < points.length; i += 7) {
-                            const x = points[i + 5] * scale, y = points[i + 6] * scale;
+                            const x = points[i + 5] * scale, y = -points[i + 6] * scale; // Flip Y
                             shape.lineTo(x, y);
                             currentX = x; currentY = y;
                         }
@@ -669,21 +669,21 @@
 
         function createShapeFromRect(element, scale) {
             const x = parseFloat(element.getAttribute('x') || '0') * scale;
-            const y = parseFloat(element.getAttribute('y') || '0') * scale;
+            const y = -parseFloat(element.getAttribute('y') || '0') * scale; // Flip Y for Three.js
             const width = parseFloat(element.getAttribute('width') || '0') * scale;
             const height = parseFloat(element.getAttribute('height') || '0') * scale;
             const shape = new THREE.Shape();
             shape.moveTo(x, y);
             shape.lineTo(x + width, y);
-            shape.lineTo(x + width, y + height);
-            shape.lineTo(x, y + height);
+            shape.lineTo(x + width, y - height); // Subtract height since Y is flipped
+            shape.lineTo(x, y - height);
             shape.lineTo(x, y);
             return shape;
         }
 
         function createShapeFromCircle(element, scale) {
             const cx = parseFloat(element.getAttribute('cx') || '0') * scale;
-            const cy = parseFloat(element.getAttribute('cy') || '0') * scale;
+            const cy = -parseFloat(element.getAttribute('cy') || '0') * scale; // Flip Y for Three.js
             const r = parseFloat(element.getAttribute('r') || '0') * scale;
             const shape = new THREE.Shape();
             const segments = 16;
@@ -702,7 +702,7 @@
 
         function createShapeFromEllipse(element, scale) {
             const cx = parseFloat(element.getAttribute('cx') || '0') * scale;
-            const cy = parseFloat(element.getAttribute('cy') || '0') * scale;
+            const cy = -parseFloat(element.getAttribute('cy') || '0') * scale; // Flip Y for Three.js
             const rx = parseFloat(element.getAttribute('rx') || '0') * scale;
             const ry = parseFloat(element.getAttribute('ry') || '0') * scale;
             const shape = new THREE.Shape();
@@ -725,13 +725,13 @@
             if (points.length < 2) return null;
             const shape = new THREE.Shape();
             const first = points[0];
-            shape.moveTo(first.x * scale, first.y * scale);
+            shape.moveTo(first.x * scale, -first.y * scale); // Flip Y for Three.js
             for (let i = 1; i < points.length; i++) {
                 const pt = points[i];
-                shape.lineTo(pt.x * scale, pt.y * scale);
+                shape.lineTo(pt.x * scale, -pt.y * scale); // Flip Y for Three.js
             }
             if (!isPolyline) {
-                shape.lineTo(first.x * scale, first.y * scale);
+                shape.lineTo(first.x * scale, -first.y * scale); // Flip Y for Three.js
             }
             return shape;
         }
@@ -979,13 +979,6 @@
                             const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
                             const mesh = new THREE.Mesh(geometry, material);
                             
-                            // Flip Y coordinates to convert from SVG (Y-down) to Three.js (Y-up)
-                            const position = geometry.attributes.position;
-                            for (let i = 0; i < position.count; i++) {
-                                position.setY(i, -position.getY(i));
-                            }
-                            position.needsUpdate = true;
-                            
                             // Position at the Z level for this color
                             mesh.position.z = currentZ + heightUnits / 2;
                             
@@ -1002,11 +995,34 @@
                 totalZ = currentZ;
             });
             
+            // Compute the bounding box of the entire scene to center it
+            const sceneBoundingBox = new THREE.Box3();
+            mainGroup.traverse(function(child) {
+                if (child.isMesh && child.geometry && child.geometry.boundingBox) {
+                    child.geometry.computeBoundingBox();
+                    const childBox = child.geometry.boundingBox.clone();
+                    childBox.applyMatrix4(child.matrixWorld);
+                    sceneBoundingBox.expandByPoint(childBox.min);
+                    sceneBoundingBox.expandByPoint(childBox.max);
+                }
+            });
+            
+            if (!sceneBoundingBox.isEmpty()) {
+                const centerX = -(sceneBoundingBox.max.x + sceneBoundingBox.min.x) / 2;
+                const centerY = -(sceneBoundingBox.max.y + sceneBoundingBox.min.y) / 2;
+                mainGroup.position.set(centerX, centerY, 0);
+            }
+            
             // Center the entire composition in the scene
             scene.add(mainGroup);
             
             // Adjust camera to view the entire scene
-            const cameraDistance = Math.max(5, totalZ * 2);
+            const sceneSize = Math.max(
+                sceneBoundingBox.getSize().x,
+                sceneBoundingBox.getSize().y,
+                totalZ
+            );
+            const cameraDistance = Math.max(5, sceneSize * 1.5);
             camera.position.set(0, 0, cameraDistance);
             camera.lookAt(0, 0, totalZ / 2);
         }
