@@ -628,9 +628,10 @@
             const svgCenterX = (minX + maxX) / 2;
             const svgCenterY = (minY + maxY) / 2;
             
-            // Calculate scale factor: make the larger dimension ~5 units in Three.js space
+            // Calculate scale factor: make the larger dimension ~100 units in Three.js space for better visibility
             const maxCoordDim = Math.max(svgWidth, svgHeight);
-            const scaleFactor = 5 / maxCoordDim;
+            const scaleFactor = 100 / maxCoordDim;
+            console.log(`SVG dimensions: ${svgWidth} x ${svgHeight}, scaleFactor: ${scaleFactor}`);
             
             // Create a group to hold all 3D objects with Y flipped and centered
             const group = new THREE.Group();
@@ -688,7 +689,7 @@
                 }
                 
                 const heightMM = colorHeights[matchedColor] || 1;
-                const heightUnits = heightMM * 0.1;
+                const heightUnits = heightMM * 0.5; // Scale mm to Three.js units (1mm = 0.5 units for better visibility)
                 
                 const rgb = colorToRGB(fillColor);
                 const material = new THREE.MeshStandardMaterial({
@@ -721,7 +722,7 @@
                         bevelEnabled: false
                     });
                     const mesh = new THREE.Mesh(geometry, material);
-                    mesh.scale.set(scaleFactor, scaleFactor, scaleFactor);
+                    mesh.scale.set(scaleFactor, scaleFactor, 1);
                     // Position at the element's top-left corner in SVG coords
                     // The group handles Y-flip and centering
                     mesh.position.x = elMinX * scaleFactor;
@@ -737,9 +738,13 @@
             const sceneWidth = svgWidth * scaleFactor;
             const sceneHeight = svgHeight * scaleFactor;
             const maxDim = Math.max(sceneWidth, sceneHeight);
-            const cameraDistance = Math.max(10, maxDim * 2);
+            // Calculate camera distance to fit the scene with some margin
+            // Using formula: cameraDistance = maxDim / (2 * tan(fov/2))
+            // For 75-degree FOV: tan(37.5°) ≈ 0.767, so 2 * 0.767 ≈ 1.534
+            const cameraDistance = Math.max(10, maxDim / 1.5);
             camera.position.set(0, 0, cameraDistance);
             camera.lookAt(0, 0, 0);
+            console.log(`Scene dimensions: ${sceneWidth} x ${sceneHeight}, camera distance: ${cameraDistance}`);
         }
 
         // Get contrasting text color for background
