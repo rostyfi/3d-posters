@@ -6,6 +6,7 @@
     <title>SVG Viewer</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/SVGLoader.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -102,8 +103,6 @@
             <input type="number" id="color-count-input" min="1" max="256" value="4" />
             <button onclick="simplifyColors()">Simplify Colors</button>
             <button onclick="create3DStructure()" id="create-3d-btn" disabled>Create 3D Structure</button>
-            <button onclick="exportSimplifiedSVG()" id="export-svg-btn" disabled>Export Simplified SVG</button>
-            <button onclick="export3DImage()" id="export-3d-btn" disabled>Export 3D Image</button>
         </div>
         
         <div id="color-heights-container" style="margin-top: 20px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; display: none;">
@@ -142,8 +141,6 @@
         const colorPaletteText = document.getElementById('color-palette');
         const colorCountInput = document.getElementById('color-count-input');
         const create3DBtn = document.getElementById('create-3d-btn');
-        const exportSVGBtn = document.getElementById('export-svg-btn');
-        const export3DBtn = document.getElementById('export-3d-btn');
         const container3D = document.getElementById('3d-container');
         const colorHeightsContainer = document.getElementById('color-heights-container');
         const colorHeightsList = document.getElementById('color-heights-list');
@@ -254,8 +251,6 @@
                 colorHeightsList.innerHTML = '';
                 colorHeights = {};
                 create3DBtn.disabled = true;
-                exportSVGBtn.disabled = true;
-                export3DBtn.disabled = true;
             };
             reader.readAsText(file);
         }
@@ -280,38 +275,24 @@
             
             if (allColors.length <= 1) return;
             
-            // Convert to RGB, filtering out any colors that can't be parsed
-            const validColors = [];
-            const rgbColors = [];
-            allColors.forEach(c => {
-                const rgb = colorToRGB(c);
-                if (rgb !== null) {
-                    validColors.push(c);
-                    rgbColors.push(rgb);
-                }
-            });
+            const rgbColors = allColors.map(c => colorToRGB(c));
             
-            // If target is >= current colors or we have no valid colors, no need to simplify
-            if (rgbColors.length <= 1) {
-                alert('Not enough valid colors to simplify');
-                return;
-            }
+            // If target is >= current colors, no need to simplify
             if (targetCount >= rgbColors.length) {
-                alert(`Target color count (${targetCount}) is not less than valid colors (${rgbColors.length})`);
+                alert('Target color count is not less than current colors');
                 return;
             }
             
-            // Cluster colors using standard k-means
-            const clusters = kMeansCluster(rgbColors, targetCount, 20);
+            // Cluster colors using weighted k-means
+            const clusters = weightedKMeansCluster(rgbColors, weights, targetCount, 20);
             
-            // Create color mapping - normalize all keys to hex for consistency
+            // Create color mapping
             colorMap = {};
-            validColors.forEach((color, index) => {
+            allColors.forEach((color, index) => {
                 const rgb = rgbColors[index];
                 const closestCluster = findClosestCluster(rgb, clusters);
                 const newColor = rgbToHex(clusters[closestCluster]);
-                const normalizedColor = color.startsWith('#') ? color.toLowerCase() : rgbToHex(rgb).toLowerCase();
-                colorMap[normalizedColor] = newColor;
+                colorMap[color] = newColor;
             });
             
             // Apply the color replacements to the SVG
@@ -330,11 +311,11 @@
             colorHeights = {};
             colorHeightsList.innerHTML = newColors.map((color, index) => {
                 const colorHex = rgbToHex(colorToRGB(color));
-                colorHeights[color] = 2; // Default height: 2mm
+                colorHeights[color] = 1; // Default height: 1mm
                 return `
                     <div style="display: flex; align-items: center; margin: 5px 0; gap: 10px;">
-                        <span style="background:${color}; color:${getContrastColor(color)}; padding:2px 6px; border-radius:3px; min-width: 60px;">${colorHex}</span>
-                        <input type="number" value="2" min="0.1" step="0.1" 
+                        <span style="background:${color}; color:${getContrastColor(color)}; padding:2px 6px; border-radius:3px; min-width: 60px;">${color}</span>
+                        <input type="number" value="1" min="0.1" step="0.1" 
                                onchange="setColorHeight('${color}', this.value)" 
                                style="width: 60px;" /> mm
                     </div>
@@ -342,48 +323,37 @@
             }).join('');
             colorHeightsContainer.style.display = 'block';
             
-            // Enable the 3D and export buttons
+            // Enable the 3D button
             create3DBtn.disabled = false;
-            exportSVGBtn.disabled = false;
         }
 
         // Count color frequencies in SVG
         function countColorsInSVG(svgContent) {
             const counts = {};
-            const addColor = (colorStr) => {
-                try {
-                    const rgb = colorToRGB(colorStr);
-                    if (rgb) {
-                        const hex = rgbToHex(rgb).toLowerCase();
-                        counts[hex] = (counts[hex] || 0) + 1;
-                    }
-                } catch (e) {}
-            };
-            const colorAttributes = ['fill', 'stroke', 'stop-color', 'flood-color', 'lighting-color', 'color'];
-            for (const attr of colorAttributes) {
-                const attrRegex = new RegExp(`\\b${attr}\\b\\s*=\\s*(?:["']([^"']*)["']|([^"' >]+))`, 'gi');
-                let match;
-                while ((match = attrRegex.exec(svgContent)) !== null) {
-                    const value = match[1] || match[2];
-                    if (value && value !== 'none' && value !== 'inherit' && value !== 'currentColor') {
-                        if (value.startsWith('url(') || value.startsWith('URL(')) continue;
-                        addColor(value);
-                    }
-                }
+            
+            // Match hex colors
+            const hexRegex = /#([0-9a-fA-F]{3,8})/g;
+            let match;
+            while ((match = hexRegex.exec(svgContent)) !== null) {
+                const color = '#' + match[1];
+                counts[color] = (counts[color] || 0) + 1;
             }
-            const styleRegex = /style\s*=\s*["']([^"']*)["']/gi;
-            let styleMatch;
-            while ((styleMatch = styleRegex.exec(svgContent)) !== null) {
-                const styleValue = styleMatch[1];
-                const colorProperties = ['fill', 'stroke', 'stop-color', 'flood-color', 'lighting-color', 'color'];
-                for (const prop of colorProperties) {
-                    const propRegex = new RegExp(`\\b${prop}\\b\\s*:\\s*([^;]+)`, 'i');
-                    const propMatch = styleValue.match(propRegex);
-                    if (propMatch) {
-                        addColor(propMatch[1]);
-                    }
-                }
+            
+            // Match rgb/rgba
+            const rgbRegex = /(?:rgb|rgba)\([\s]*(\d+)[\s]*,[\s]*(\d+)[\s]*,[\s]*(\d+)/g;
+            while ((match = rgbRegex.exec(svgContent)) !== null) {
+                const color = `rgb(${match[1]}, ${match[2]}, ${match[3]})`;
+                counts[color] = (counts[color] || 0) + 1;
             }
+            
+            // Match named colors
+            const namedColors = ['red', 'green', 'blue', 'yellow', 'cyan', 'magenta', 'black', 'white', 'gray', 'grey', 'orange', 'purple', 'pink', 'brown', 'maroon', 'navy', 'teal', 'lime', 'aqua', 'fuchsia', 'silver', 'gold'];
+            const namedRegex = new RegExp('\\b(' + namedColors.join('|') + ')\\b', 'gi');
+            while ((match = namedRegex.exec(svgContent)) !== null) {
+                const color = match[1].toLowerCase();
+                counts[color] = (counts[color] || 0) + 1;
+            }
+            
             return counts;
         }
 
@@ -501,30 +471,22 @@
             // Extract all colors with their frequencies
             const colorCounts = countColorsInSVG(originalSVGContent);
             const allColors = Object.keys(colorCounts);
+            const weights = allColors.map(c => colorCounts[c]);
             
             if (allColors.length <= 1) {
                 colorPaletteText.textContent = '';
                 return;
             }
             
-            // Convert to RGB, filtering out any colors that can't be parsed
-            const validColors = [];
-            const rgbColors = [];
-            allColors.forEach(c => {
-                const rgb = colorToRGB(c);
-                if (rgb !== null) {
-                    validColors.push(c);
-                    rgbColors.push(rgb);
-                }
-            });
+            const rgbColors = allColors.map(c => colorToRGB(c));
             
-            if (rgbColors.length <= 1 || targetCount >= rgbColors.length) {
+            if (targetCount >= rgbColors.length) {
                 colorPaletteText.textContent = '';
                 return;
             }
             
-            // Cluster colors using standard k-means
-            const clusters = kMeansCluster(rgbColors, targetCount, 20);
+            // Cluster colors using weighted k-means
+            const clusters = weightedKMeansCluster(rgbColors, weights, targetCount, 20);
             
             // Get the resulting palette colors
             const paletteColors = clusters.map(c => rgbToHex(c));
@@ -538,270 +500,8 @@
             colorHeights[color] = parseFloat(height);
         }
 
-        // Parse transform attribute and apply to position
-        function getElementTransform(element) {
-            const transform = element.getAttribute('transform');
-            if (!transform) return { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 };
-            
-            const result = { x: 0, y: 0, scaleX: 1, scaleY: 1, rotation: 0 };
-            const matrix = element.transform.baseVal.consolidate();
-            if (matrix && matrix.type === SVGTransform.SVG_TRANSFORM_MATRIX) {
-                result.x = matrix.e;
-                result.y = matrix.f;
-                result.scaleX = Math.sqrt(matrix.a * matrix.a + matrix.c * matrix.c);
-                result.scaleY = Math.sqrt(matrix.b * matrix.b + matrix.d * matrix.d);
-                result.rotation = Math.atan2(matrix.b, matrix.a);
-            }
-            return result;
-        }
-
-        // Create a Three.js Shape from an SVG element
-        function createShapeFromSVGElement(element, scale) {
-            const tagName = element.tagName.toLowerCase();
-            
-            try {
-                switch (tagName) {
-                    case 'path':
-                        return createShapeFromPath(element.getAttribute('d') || '', scale);
-                    case 'rect':
-                        return createShapeFromRect(element, scale);
-                    case 'circle':
-                        return createShapeFromCircle(element, scale);
-                    case 'ellipse':
-                        return createShapeFromEllipse(element, scale);
-                    case 'polygon':
-                        return createShapeFromPolygon(element.getAttribute('points') || '', scale);
-                    case 'polyline':
-                        return createShapeFromPolygon(element.getAttribute('points') || '', scale, true);
-                    case 'line':
-                        return null;
-                    case 'g':
-                        return createShapeFromGroup(element, scale);
-                    default:
-                        console.warn(`Unsupported SVG element: ${tagName}`);
-                        return null;
-                }
-            } catch (e) {
-                console.error(`Error creating shape from ${tagName}:`, e);
-                return null;
-            }
-        }
-
-        function createShapeFromPath(d, scale) {
-            const shape = new THREE.Shape();
-            let currentX = 0, currentY = 0;
-            let startX = 0, startY = 0;
-            let controlX = 0, controlY = 0;
-            let prevControlX = 0, prevControlY = 0;
-            
-            const commands = parseSVGPath(d);
-            
-            commands.forEach(cmd => {
-                const type = cmd.type.toUpperCase();
-                const points = cmd.points || [];
-                
-                switch (type) {
-                    case 'M':
-                        if (points.length >= 2) {
-                            currentX = points[0] * scale;
-                            currentY = -points[1] * scale; // Flip Y for Three.js
-                            startX = currentX; startY = currentY;
-                            shape.moveTo(currentX, currentY);
-                        }
-                        break;
-                    case 'L':
-                        for (let i = 0; i < points.length; i += 2) {
-                            currentX = points[i] * scale;
-                            currentY = -points[i + 1] * scale; // Flip Y for Three.js
-                            shape.lineTo(currentX, currentY);
-                        }
-                        break;
-                    case 'H':
-                        for (let i = 0; i < points.length; i++) {
-                            currentX = points[i] * scale;
-                            shape.lineTo(currentX, currentY);
-                        }
-                        break;
-                    case 'V':
-                        for (let i = 0; i < points.length; i++) {
-                            currentY = -points[i] * scale; // Flip Y for Three.js
-                            shape.lineTo(currentX, currentY);
-                        }
-                        break;
-                    case 'C':
-                        for (let i = 0; i < points.length; i += 6) {
-                            const x1 = points[i] * scale, y1 = -points[i + 1] * scale; // Flip Y
-                            const x2 = points[i + 2] * scale, y2 = -points[i + 3] * scale; // Flip Y
-                            const x = points[i + 4] * scale, y = -points[i + 5] * scale; // Flip Y
-                            shape.bezierCurveTo(x1, y1, x2, y2, x, y);
-                            currentX = x; currentY = y;
-                            prevControlX = x2; prevControlY = y2;
-                        }
-                        break;
-                    case 'S':
-                        for (let i = 0; i < points.length; i += 4) {
-                            const x2 = points[i] * scale, y2 = -points[i + 1] * scale; // Flip Y
-                            const x = points[i + 2] * scale, y = -points[i + 3] * scale; // Flip Y
-                            const x1 = 2 * currentX - prevControlX;
-                            const y1 = 2 * currentY - prevControlY;
-                            shape.bezierCurveTo(x1, y1, x2, y2, x, y);
-                            currentX = x; currentY = y;
-                            prevControlX = x2; prevControlY = y2;
-                        }
-                        break;
-                    case 'Q':
-                        for (let i = 0; i < points.length; i += 4) {
-                            const x1 = points[i] * scale, y1 = -points[i + 1] * scale; // Flip Y
-                            const x = points[i + 2] * scale, y = -points[i + 3] * scale; // Flip Y
-                            shape.quadraticCurveTo(x1, y1, x, y);
-                            currentX = x; currentY = y;
-                            prevControlX = x1; prevControlY = y1;
-                        }
-                        break;
-                    case 'T':
-                        for (let i = 0; i < points.length; i += 2) {
-                            const x = points[i] * scale, y = -points[i + 1] * scale; // Flip Y
-                            const x1 = 2 * currentX - prevControlX;
-                            const y1 = 2 * currentY - prevControlY;
-                            shape.quadraticCurveTo(x1, y1, x, y);
-                            currentX = x; currentY = y;
-                            prevControlX = x1; prevControlY = y1;
-                        }
-                        break;
-                    case 'A':
-                        for (let i = 0; i < points.length; i += 7) {
-                            const x = points[i + 5] * scale, y = -points[i + 6] * scale; // Flip Y
-                            shape.lineTo(x, y);
-                            currentX = x; currentY = y;
-                        }
-                        break;
-                    case 'Z':
-                        shape.lineTo(startX, startY);
-                        currentX = startX; currentY = startY;
-                        break;
-                }
-            });
-            return shape;
-        }
-
-        function parseSVGPath(d) {
-            const commands = [];
-            const commandRegex = /([A-Za-z])([^A-Za-z]*)/g;
-            let match;
-            while ((match = commandRegex.exec(d)) !== null) {
-                const type = match[1];
-                const argsStr = match[2].trim();
-                if (!argsStr) {
-                    commands.push({ type });
-                    continue;
-                }
-                const numbers = [];
-                const numRegex = /[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?/g;
-                let numMatch;
-                while ((numMatch = numRegex.exec(argsStr)) !== null) {
-                    numbers.push(parseFloat(numMatch[0]));
-                }
-                commands.push({ type, points: numbers });
-            }
-            return commands;
-        }
-
-        function createShapeFromRect(element, scale) {
-            const x = parseFloat(element.getAttribute('x') || '0') * scale;
-            const y = -parseFloat(element.getAttribute('y') || '0') * scale; // Flip Y for Three.js
-            const width = parseFloat(element.getAttribute('width') || '0') * scale;
-            const height = parseFloat(element.getAttribute('height') || '0') * scale;
-            const shape = new THREE.Shape();
-            shape.moveTo(x, y);
-            shape.lineTo(x + width, y);
-            shape.lineTo(x + width, y - height); // Subtract height since Y is flipped
-            shape.lineTo(x, y - height);
-            shape.lineTo(x, y);
-            return shape;
-        }
-
-        function createShapeFromCircle(element, scale) {
-            const cx = parseFloat(element.getAttribute('cx') || '0') * scale;
-            const cy = -parseFloat(element.getAttribute('cy') || '0') * scale; // Flip Y for Three.js
-            const r = parseFloat(element.getAttribute('r') || '0') * scale;
-            const shape = new THREE.Shape();
-            const segments = 16;
-            shape.moveTo(cx + r, cy);
-            for (let i = 1; i <= segments; i++) {
-                const theta = (i / segments) * Math.PI * 2;
-                const x = cx + r * Math.cos(theta);
-                const y = cy + r * Math.sin(theta);
-                const thetaMid = ((i - 0.5) / segments) * Math.PI * 2;
-                const mx = cx + r * Math.cos(thetaMid);
-                const my = cy + r * Math.sin(thetaMid);
-                shape.quadraticCurveTo(mx, my, x, y);
-            }
-            return shape;
-        }
-
-        function createShapeFromEllipse(element, scale) {
-            const cx = parseFloat(element.getAttribute('cx') || '0') * scale;
-            const cy = -parseFloat(element.getAttribute('cy') || '0') * scale; // Flip Y for Three.js
-            const rx = parseFloat(element.getAttribute('rx') || '0') * scale;
-            const ry = parseFloat(element.getAttribute('ry') || '0') * scale;
-            const shape = new THREE.Shape();
-            const segments = 16;
-            shape.moveTo(cx + rx, cy);
-            for (let i = 1; i <= segments; i++) {
-                const theta = (i / segments) * Math.PI * 2;
-                const x = cx + rx * Math.cos(theta);
-                const y = cy + ry * Math.sin(theta);
-                const thetaMid = ((i - 0.5) / segments) * Math.PI * 2;
-                const mx = cx + rx * Math.cos(thetaMid);
-                const my = cy + ry * Math.sin(thetaMid);
-                shape.quadraticCurveTo(mx, my, x, y);
-            }
-            return shape;
-        }
-
-        function createShapeFromPolygon(pointsStr, scale, isPolyline = false) {
-            const points = parseSVGPoints(pointsStr);
-            if (points.length < 2) return null;
-            const shape = new THREE.Shape();
-            const first = points[0];
-            shape.moveTo(first.x * scale, -first.y * scale); // Flip Y for Three.js
-            for (let i = 1; i < points.length; i++) {
-                const pt = points[i];
-                shape.lineTo(pt.x * scale, -pt.y * scale); // Flip Y for Three.js
-            }
-            if (!isPolyline) {
-                shape.lineTo(first.x * scale, -first.y * scale); // Flip Y for Three.js
-            }
-            return shape;
-        }
-
-        function parseSVGPoints(pointsStr) {
-            const points = [];
-            const tokens = pointsStr.trim().split(/[,\s]+/);
-            for (let i = 0; i < tokens.length; i += 2) {
-                if (i + 1 < tokens.length) {
-                    points.push({ x: parseFloat(tokens[i]), y: parseFloat(tokens[i + 1]) });
-                }
-            }
-            return points;
-        }
-
-        function createShapeFromGroup(element, scale) {
-            const children = element.children;
-            const shapes = [];
-            for (let i = 0; i < children.length; i++) {
-                const childShape = createShapeFromSVGElement(children[i], scale);
-                if (childShape) {
-                    if (Array.isArray(childShape)) {
-                        shapes.push(...childShape);
-                    } else {
-                        shapes.push(childShape);
-                    }
-                }
-            }
-            return shapes.length > 0 ? shapes : null;
-        }
-
+        // Note: Custom SVG shape creation functions have been removed.
+        // We now use THREE.SVGLoader from jsdelivr CDN which handles all SVG path parsing.
         // Initialize Three.js (lazy initialization)
         function initThreeJS() {
             if (scene) return; // Already initialized
@@ -858,49 +558,15 @@
             animate();
         }
 
-        // Get SVG viewBox and dimensions for proper scaling
-        function getSVGViewBox(svgElement) {
-            const viewBox = svgElement.getAttribute('viewBox');
-            if (viewBox) {
-                const parts = viewBox.split(/[\s,]+/).map(parseFloat);
-                if (parts.length >= 4) {
-                    return {
-                        x: parts[0],
-                        y: parts[1],
-                        width: parts[2],
-                        height: parts[3]
-                    };
-                }
-            }
-            // Fallback to width/height attributes
-            const width = parseFloat(svgElement.getAttribute('width') || '100');
-            const height = parseFloat(svgElement.getAttribute('height') || '100');
-            return { x: 0, y: 0, width, height };
-        }
-
-        // Get the absolute position and size of an SVG element relative to its SVG container
-        function getElementBounds(element, svgContainer) {
-            try {
-                // Use getBBox() to get the element's bounding box in user units
-                const bbox = element.getBBox();
-                return {
-                    x: bbox.x,
-                    y: bbox.y,
-                    width: bbox.width,
-                    height: bbox.height
-                };
-            } catch (e) {
-                // Fallback for elements that don't support getBBox (like groups without children)
-                return { x: 0, y: 0, width: 0, height: 0 };
-            }
-        }
-
-        // Create 3D structure from simplified SVG
+        // Create 3D structure from simplified SVG using THREE.SVGLoader
         function create3DStructure() {
             if (!simplifiedSVGContent) {
                 alert('Please simplify the colors first');
                 return;
             }
+            
+            // Show the 3D container
+            container3D.style.display = 'block';
             
             // Initialize Three.js if not already done
             initThreeJS();
@@ -917,159 +583,201 @@
             directionalLight.position.set(1, 1, 1);
             scene.add(directionalLight);
             
-            // Get the simplified SVG element
+            // Get the simplified SVG element from DOM
             const svgContainer = svgDisplaySimplified.querySelector('svg');
             if (!svgContainer) {
                 console.error('No SVG element found');
                 return;
             }
             
-            // Get SVG viewBox for coordinate system
-            const viewBox = getSVGViewBox(svgContainer);
-            const svgViewWidth = viewBox.width || 100;
-            const svgViewHeight = viewBox.height || 100;
-            const svgViewX = viewBox.x || 0;
-            const svgViewY = viewBox.y || 0;
+            // Parse the entire SVG to get bounding box and scale
+            const loader = new THREE.SVGLoader();
+            let svgData;
+            try {
+                svgData = loader.parse(simplifiedSVGContent);
+            } catch (e) {
+                console.error('Error parsing SVG:', e);
+                alert('Error parsing SVG: ' + e.message);
+                return;
+            }
             
-            // Calculate scale factor to fit in Three.js scene
-            // We want the SVG to fit in a reasonable space (e.g., 10x10 units)
-            const targetSize = 10;
-            const scaleFactor = Math.min(
-                targetSize / svgViewWidth,
-                targetSize / svgViewHeight
-            );
+            const paths = svgData.paths;
+            if (!paths || paths.length === 0) {
+                console.warn('No paths found in parsed SVG');
+                alert('No paths found in SVG');
+                return;
+            }
+            console.log(`Found ${paths.length} paths in SVG`);
             
-            // Get all colored elements from the SVG
-            const allElements = svgContainer.querySelectorAll('[fill], [style*="fill"]');
+            // Calculate bounding box from all paths
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
             
-            // Group elements by their fill color (normalized to hex)
-            const elementsByColor = {};
-            const colorToHex = {};
+            for (const path of paths) {
+                for (const subPath of path.subPaths) {
+                    for (const point of subPath.getPoints()) {
+                        minX = Math.min(minX, point.x);
+                        minY = Math.min(minY, point.y);
+                        maxX = Math.max(maxX, point.x);
+                        maxY = Math.max(maxY, point.y);
+                    }
+                }
+            }
             
-            allElements.forEach(element => {
-                let fillColor = element.getAttribute('fill') || '';
-                const style = element.getAttribute('style') || '';
+            // Also check if SVG has explicit width/height or viewBox
+            const svgWidthAttr = svgContainer.getAttribute('width');
+            const svgHeightAttr = svgContainer.getAttribute('height');
+            const viewBox = svgContainer.getAttribute('viewBox');
+            let svgWidth, svgHeight, svgCenterX, svgCenterY;
+            
+            if (svgWidthAttr && svgHeightAttr && !isNaN(parseFloat(svgWidthAttr)) && !isNaN(parseFloat(svgHeightAttr))) {
+                svgWidth = parseFloat(svgWidthAttr);
+                svgHeight = parseFloat(svgHeightAttr);
+                svgCenterX = svgWidth / 2;
+                svgCenterY = svgHeight / 2;
+                console.log(`Using SVG width/height attributes: ${svgWidth} x ${svgHeight}`);
+            } else if (viewBox) {
+                const vb = viewBox.split(/[\s,]+/).map(v => parseFloat(v.trim())).filter(v => !isNaN(v));
+                if (vb.length >= 4) {
+                    const vbWidth = vb[2];
+                    const vbHeight = vb[3];
+                    svgWidth = vbWidth;
+                    svgHeight = vbHeight;
+                    svgCenterX = vb[0] + vbWidth / 2;
+                    svgCenterY = vb[1] + vbHeight / 2;
+                    console.log(`Using SVG viewBox: ${vb[0]},${vb[1]} ${vbWidth}x${vbHeight}`);
+                } else {
+                    svgWidth = maxX - minX;
+                    svgHeight = maxY - minY;
+                    svgCenterX = (minX + maxX) / 2;
+                    svgCenterY = (minY + maxY) / 2;
+                }
+            } else {
+                svgWidth = maxX - minX;
+                svgHeight = maxY - minY;
+                svgCenterX = (minX + maxX) / 2;
+                svgCenterY = (minY + maxY) / 2;
+            }
+            
+            console.log(`Final SVG dimensions: ${svgWidth} x ${svgHeight}, center: (${svgCenterX}, ${svgCenterY})`);
+            
+            // Calculate scale factor: make the larger dimension ~100 units in Three.js space for better visibility
+            const maxCoordDim = Math.max(svgWidth, svgHeight);
+            const scaleFactor = 100 / maxCoordDim;
+            console.log(`SVG dimensions: ${svgWidth} x ${svgHeight}, scaleFactor: ${scaleFactor}`);
+            
+            // Create a group to hold all 3D objects with Y flipped
+            const group = new THREE.Group();
+            group.scale.y = -1; // Flip Y: SVG Y-down to Three.js Y-up
+            scene.add(group);
+            
+            // Extract colors from simplified SVG for matching
+            const simplifiedColors = extractColorsFromSVG(simplifiedSVGContent);
+            console.log(`Palette has ${simplifiedColors.length} colors:`, simplifiedColors);
+            
+            // Process each path from the parsed SVG data directly
+            // This ensures all coordinates are in the same system
+            paths.forEach((path, pathIdx) => {
+                // Get fill color from path userData - try multiple locations
+                let fillColor = path.userData?.fill || path.userData?.style?.fill || '';
                 
-                // Check style attribute for fill
-                if (!fillColor && style) {
-                    const fillMatch = style.match(/fill:\s*([^;]+)/i);
-                    if (fillMatch) fillColor = fillMatch[1].trim();
+                // Also check if userData has fill in a different format
+                if (!fillColor && path.userData) {
+                    // userData might have attributes directly
+                    for (const key in path.userData) {
+                        if (key.toLowerCase() === 'fill') {
+                            fillColor = path.userData[key];
+                            break;
+                        }
+                    }
+                    // Or style might be a string
+                    if (!fillColor && path.userData.style && typeof path.userData.style === 'string') {
+                        const fillMatch = path.userData.style.match(/fill:\s*([^;]+)/i);
+                        if (fillMatch) fillColor = fillMatch[1].trim();
+                    }
                 }
                 
-                if (!fillColor || fillColor === 'none' || fillColor === 'inherit') return;
+                // Skip if fill is none, inherit, or a URL reference
+                if (!fillColor || typeof fillColor !== 'string' || 
+                    fillColor === 'none' || fillColor === 'inherit' || 
+                    fillColor.startsWith('url(') || fillColor.startsWith('var(')) {
+                    return;
+                }
                 
-                // Normalize the color to hex
+                // Normalize the color to hex for lookup
                 const hexColor = rgbToHex(colorToRGB(fillColor));
                 
-                if (!elementsByColor[hexColor]) {
-                    elementsByColor[hexColor] = [];
-                    colorToHex[hexColor] = fillColor; // Store original color string
+                // Find the matching color from our palette
+                let matchedColor = null;
+                for (const color of simplifiedColors) {
+                    const colorHex = rgbToHex(colorToRGB(color));
+                    if (colorHex === hexColor) {
+                        matchedColor = color;
+                        break;
+                    }
                 }
-                elementsByColor[hexColor].push(element);
-            });
-            
-            // Extract unique colors from simplified SVG (for ordering)
-            const colors = extractColorsFromSVG(simplifiedSVGContent);
-            const mmToUnits = 0.1;
-            const spacingUnits = 0.05;
-            
-            // Main container group that will hold all color layers
-            const mainGroup = new THREE.Group();
-            
-            let totalZ = 0;
-            let currentZ = 0;
-            
-            // Process each color
-            colors.forEach((color, index) => {
-                const colorHex = rgbToHex(colorToRGB(color));
-                const elements = elementsByColor[colorHex] || [];
                 
-                const rgb = colorToRGB(color);
+                const heightMM = colorHeights[matchedColor] || 1;
+                const heightUnits = heightMM * 0.5; // Scale mm to Three.js units (1mm = 0.5 units for better visibility)
+                
+                const rgb = colorToRGB(fillColor);
                 const material = new THREE.MeshStandardMaterial({
                     color: new THREE.Color(rgb.r / 255, rgb.g / 255, rgb.b / 255),
                     side: THREE.DoubleSide,
                     transparent: false
                 });
                 
-                const heightMM = colorHeights[color] || 1;
-                const heightUnits = heightMM * mmToUnits;
-                
-                if (elements.length === 0) {
-                    // Fallback: create a small box for this color
-                    const geometry = new THREE.BoxGeometry(0.5, 0.5, heightUnits);
-                    const mesh = new THREE.Mesh(geometry, material);
-                    mesh.position.set(0, 0, currentZ + heightUnits / 2);
-                    mainGroup.add(mesh);
-                } else {
-                    // Create a group for this color's meshes
-                    const colorGroup = new THREE.Group();
-                    
-                    elements.forEach(element => {
-                        const shapesOrShape = createShapeFromSVGElement(element, scaleFactor);
-                        if (!shapesOrShape) return;
-                        
-                        const shapes = Array.isArray(shapesOrShape) ? shapesOrShape : [shapesOrShape];
-                        
-                        shapes.forEach(shape => {
-                            const extrudeSettings = {
-                                depth: heightUnits,
-                                bevelEnabled: false
-                            };
-                            const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-                            const mesh = new THREE.Mesh(geometry, material);
-                            
-                            // Position at the Z level for this color
-                            mesh.position.z = currentZ + heightUnits / 2;
-                            
-                            colorGroup.add(mesh);
-                        });
-                    });
-                    
-                    if (colorGroup.children.length > 0) {
-                        mainGroup.add(colorGroup);
+                // Calculate bounding box from this path's data
+                let elMinX = Infinity, elMinY = Infinity, elMaxX = -Infinity, elMaxY = -Infinity;
+                for (const subPath of path.subPaths) {
+                    for (const point of subPath.getPoints()) {
+                        elMinX = Math.min(elMinX, point.x);
+                        elMinY = Math.min(elMinY, point.y);
+                        elMaxX = Math.max(elMaxX, point.x);
+                        elMaxY = Math.max(elMaxY, point.y);
                     }
                 }
+                const elCenterX = (elMinX + elMaxX) / 2;
+                const elCenterY = (elMinY + elMaxY) / 2;
                 
-                currentZ += heightUnits + spacingUnits;
-                totalZ = currentZ;
-            });
-            
-            // Compute the bounding box of the entire scene to center it
-            const sceneBoundingBox = new THREE.Box3();
-            mainGroup.traverse(function(child) {
-                if (child.isMesh && child.geometry && child.geometry.boundingBox) {
-                    child.geometry.computeBoundingBox();
-                    const childBox = child.geometry.boundingBox.clone();
-                    childBox.applyMatrix4(child.matrixWorld);
-                    sceneBoundingBox.expandByPoint(childBox.min);
-                    sceneBoundingBox.expandByPoint(childBox.max);
+                console.log(`  Path ${pathIdx}: center=(${elCenterX},${elCenterY}), color=${fillColor}, height=${heightMM}mm`);
+                
+                // Create shapes from this path
+                const shapes = THREE.SVGLoader.createShapes(path);
+                console.log(`    ${shapes.length} shapes from path`);
+                for (const shape of shapes) {
+                    const geometry = new THREE.ExtrudeGeometry(shape, {
+                        depth: heightUnits,
+                        bevelEnabled: false
+                    });
+                    const mesh = new THREE.Mesh(geometry, material);
+                    // Don't position individually - shapes already have absolute SVG coordinates
+                    // Just position z for height
+                    mesh.position.z = heightUnits / 2;
+                    group.add(mesh);
                 }
             });
             
-            if (!sceneBoundingBox.isEmpty()) {
-                const centerX = -(sceneBoundingBox.max.x + sceneBoundingBox.min.x) / 2;
-                const centerY = -(sceneBoundingBox.max.y + sceneBoundingBox.min.y) / 2;
-                mainGroup.position.set(centerX, centerY, 0);
-            }
+            console.log(`Total meshes in group: ${group.children.length}`);
             
-            // Center the entire composition in the scene
-            scene.add(mainGroup);
-            
-            // Adjust camera to view the entire scene
-            const sceneSize = Math.max(
-                sceneBoundingBox.getSize().x,
-                sceneBoundingBox.getSize().y,
-                totalZ
-            );
-            const cameraDistance = Math.max(5, sceneSize * 1.5);
-            camera.position.set(0, 0, cameraDistance);
-            camera.lookAt(0, 0, totalZ / 2);
+            // Position camera to see the entire scene
+            const sceneWidth = svgWidth * scaleFactor;
+            const sceneHeight = svgHeight * scaleFactor;
+            const maxDim = Math.max(sceneWidth, sceneHeight);
+            // Calculate camera distance to fit the scene with some margin
+            // Using formula: cameraDistance = maxDim / (2 * tan(fov/2))
+            // For 75-degree FOV: tan(37.5°) ≈ 0.767, so 2 * 0.767 ≈ 1.534
+            const cameraDistance = Math.max(10, maxDim / 1.5);
+            // Center camera at SVG center with Y flipped
+            camera.position.set(svgCenterX * scaleFactor, -svgCenterY * scaleFactor, cameraDistance);
+            camera.lookAt(svgCenterX * scaleFactor, -svgCenterY * scaleFactor, 0);
+            console.log(`Scene dimensions: ${sceneWidth} x ${sceneHeight}, camera distance: ${cameraDistance}`);
         }
 
         // Get contrasting text color for background
         function getContrastColor(hexColor) {
             // Convert hex to RGB
             const rgb = colorToRGB(hexColor);
+            if (!rgb) return '#000';
             const luminance = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
             return luminance > 0.5 ? '#000' : '#fff';
         }
@@ -1078,55 +786,21 @@
         function applyColorMap(svgContent, colorMap) {
             let result = svgContent;
             
-            // Step 1: Convert all color formats to normalized 6-digit lowercase hex
-            // Convert rgb(r,g,b) to #rrggbb
-            result = result.replace(/rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)/gi, (m, r, g, b) => {
-                return rgbToHex({r: parseInt(r), g: parseInt(g), b: parseInt(b)});
-            });
-            result = result.replace(/rgba\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*(?:[01]?\.\d*|\.\d+))?\s*\)/gi, (m, r, g, b) => {
-                return rgbToHex({r: parseInt(r), g: parseInt(g), b: parseInt(b)});
-            });
-            result = result.replace(/\b(red|green|lime|blue|yellow|cyan|magenta|black|white|gray|grey|silver|maroon|navy|teal|purple|orange|pink|brown|aqua|fuchsia|gold)\b/gi, (m, name) => {
-                const map = {
-                    'red':'#ff0000','green':'#008000','lime':'#00ff00','blue':'#0000ff',
-                    'yellow':'#ffff00','cyan':'#00ffff','magenta':'#ff00ff','black':'#000000',
-                    'white':'#ffffff','gray':'#808080','grey':'#808080','silver':'#c0c0c0',
-                    'maroon':'#800000','navy':'#000080','teal':'#008080','purple':'#800080',
-                    'orange':'#ffa500','pink':'#ffc0cb','brown':'#a52a2a','aqua':'#00ffff',
-                    'fuchsia':'#ff00ff','gold':'#ffd700'
-                };
-                return map[name.toLowerCase()] || m;
-            });
-            // Normalize all hex to 6-digit lowercase
-            // Handle 8-digit (RRGGBBAA) -> RRGGBB
-            result = result.replace(/#([0-9a-f]{8})/gi, (m, p1) => '#' + p1.substring(0,6).toLowerCase());
-            // Handle 7-digit (malformed) -> RRGGBB (take first 6)
-            result = result.replace(/#([0-9a-f]{7})/gi, (m, p1) => '#' + p1.substring(0,6).toLowerCase());
-            // Handle 6-digit
-            result = result.replace(/#([0-9a-f]{6})/gi, (m, p1) => '#'+p1.toLowerCase());
-            // Handle 4-digit (RGBA) -> RRGGBB
-            result = result.replace(/#([0-9a-f]{4})/gi, (m, p1) => {
-                const r=p1[0].toLowerCase(),g=p1[1].toLowerCase(),b=p1[2].toLowerCase();
-                return '#'+r+r+g+g+b+b;
-            });
-            // Handle 3-digit (RGB) -> RRGGBB
-            result = result.replace(/#([0-9a-f]{3})/gi, (m, p1) => {
-                const r=p1[0].toLowerCase(),g=p1[1].toLowerCase(),b=p1[2].toLowerCase();
-                return '#'+r+r+g+g+b+b;
-            });
-            
-            // Step 2: Apply color map using word boundaries
-            for (const [oldHex, newHex] of Object.entries(colorMap)) {
-                if (oldHex.startsWith('#')) {
-                    const oldNorm = oldHex.toLowerCase();
-                    const newNorm = newHex.toLowerCase();
-                    // Use negative lookahead at end to avoid partial matches
-                    // (e.g., #000000 matching inside #00000000)
-                    result = result.replace(
-                        new RegExp(oldNorm + '(?![0-9a-fA-F])', 'gi'),
-                        newNorm
-                    );
+            // Replace hex colors
+            for (const [oldColor, newColor] of Object.entries(colorMap)) {
+                if (oldColor.startsWith('#')) {
+                    const oldHex = oldColor.toLowerCase();
+                    const newHex = newColor.toLowerCase();
+                    const regex = new RegExp(oldHex, 'gi');
+                    result = result.replace(regex, newHex);
                 }
+                // Replace named colors
+                else if (/^[a-z]+$/.test(oldColor)) {
+                    const regex = new RegExp('\\b' + oldColor + '\\b', 'gi');
+                    result = result.replace(regex, newColor);
+                }
+                // Replace rgb/rgba - this is more complex, skip for now
+                // as it would require parsing the full rgb() expression
             }
             
             return result;
@@ -1226,6 +900,12 @@
 
         // Convert color string to RGB object
         function colorToRGB(color) {
+            // Handle null, undefined, or non-string values
+            if (!color || typeof color !== 'string') {
+                console.warn(`colorToRGB received non-string value:`, color);
+                return {r: 0, g: 0, b: 0};
+            }
+            
             // Hex color
             if (color.startsWith('#')) {
                 const hex = color.substring(1);
@@ -1243,13 +923,7 @@
                     r = parseInt(hex.substring(0, 2), 16);
                     g = parseInt(hex.substring(2, 4), 16);
                     b = parseInt(hex.substring(4, 6), 16);
-                } else if (hex.length === 7) {
-                    // 7-digit hex (malformed, treat as 6-digit by dropping last char)
-                    r = parseInt(hex.substring(0, 2), 16);
-                    g = parseInt(hex.substring(2, 4), 16);
-                    b = parseInt(hex.substring(4, 6), 16);
-                } else if (hex.length >= 8) {
-                    // 8-digit or longer (RRGGBBAA or malformed), take first 6 for RGB
+                } else if (hex.length === 8) {
                     r = parseInt(hex.substring(0, 2), 16);
                     g = parseInt(hex.substring(2, 4), 16);
                     b = parseInt(hex.substring(4, 6), 16);
@@ -1305,9 +979,15 @@
 
         // Convert RGB object to hex string
         function rgbToHex(rgb) {
-            const r = Math.max(0, Math.min(255, rgb.r));
-            const g = Math.max(0, Math.min(255, rgb.g));
-            const b = Math.max(0, Math.min(255, rgb.b));
+            // Handle invalid input
+            if (!rgb || typeof rgb !== 'object') {
+                console.warn(`rgbToHex received invalid input:`, rgb);
+                return '#000000';
+            }
+            
+            const r = Math.max(0, Math.min(255, rgb.r || 0));
+            const g = Math.max(0, Math.min(255, rgb.g || 0));
+            const b = Math.max(0, Math.min(255, rgb.b || 0));
             
             const toHex = (c) => {
                 const hex = c.toString(16);
@@ -1363,8 +1043,6 @@
             colorHeightsList.innerHTML = '';
             colorHeights = {};
             create3DBtn.disabled = true;
-            exportSVGBtn.disabled = true;
-            export3DBtn.disabled = true;
         }
 
         // Format file size
