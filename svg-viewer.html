@@ -638,7 +638,7 @@
             group.scale.y = -1; // Flip Y: SVG Y-down to Three.js Y-up
             // Center the group by offsetting by the SVG center
             group.position.x = -svgCenterX * scaleFactor;
-            group.position.y = svgCenterY * scaleFactor;
+            group.position.y = -svgCenterY * scaleFactor;
             
             scene.add(group);
             
