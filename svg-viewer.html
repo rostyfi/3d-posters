@@ -750,10 +750,8 @@
                         bevelEnabled: false
                     });
                     const mesh = new THREE.Mesh(geometry, material);
-                    mesh.scale.set(scaleFactor, scaleFactor, 1);
-                    // Position at element's top-left in SVG coords
-                    mesh.position.x = elMinX * scaleFactor;
-                    mesh.position.y = elMinY * scaleFactor;
+                    // Don't position individually - shapes already have absolute SVG coordinates
+                    // Just position z for height
                     mesh.position.z = heightUnits / 2;
                     group.add(mesh);
                 }
