@@ -633,9 +633,9 @@
             const scaleFactor = 100 / maxCoordDim;
             console.log(`SVG dimensions: ${svgWidth} x ${svgHeight}, scaleFactor: ${scaleFactor}`);
             
-            // Create a group to hold all 3D objects
+            // Create a group to hold all 3D objects with Y flipped
             const group = new THREE.Group();
-            
+            group.scale.y = -1; // Flip Y: SVG Y-down to Three.js Y-up
             scene.add(group);
             
             // Extract colors from simplified SVG for matching
@@ -719,9 +719,9 @@
                     });
                     const mesh = new THREE.Mesh(geometry, material);
                     mesh.scale.set(scaleFactor, scaleFactor, 1);
-                    // Position with Y flipped (SVG Y-down to Three.js Y-up)
+                    // Position at element's top-left in SVG coords
                     mesh.position.x = elMinX * scaleFactor;
-                    mesh.position.y = -elMinY * scaleFactor;
+                    mesh.position.y = elMinY * scaleFactor;
                     mesh.position.z = heightUnits / 2;
                     group.add(mesh);
                 }
@@ -737,7 +737,7 @@
             // Using formula: cameraDistance = maxDim / (2 * tan(fov/2))
             // For 75-degree FOV: tan(37.5°) ≈ 0.767, so 2 * 0.767 ≈ 1.534
             const cameraDistance = Math.max(10, maxDim / 1.5);
-            // Center camera - flip Y to match SVG coordinate system
+            // Center camera - group handles Y flip
             camera.position.set(svgCenterX * scaleFactor, -svgCenterY * scaleFactor, cameraDistance);
             camera.lookAt(svgCenterX * scaleFactor, -svgCenterY * scaleFactor, 0);
             console.log(`Scene dimensions: ${sceneWidth} x ${sceneHeight}, camera distance: ${cameraDistance}`);
