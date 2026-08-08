@@ -623,10 +623,42 @@
                 }
             }
             
-            const svgWidth = maxX - minX;
-            const svgHeight = maxY - minY;
-            const svgCenterX = (minX + maxX) / 2;
-            const svgCenterY = (minY + maxY) / 2;
+            // Also check if SVG has explicit width/height or viewBox
+            const svgWidthAttr = svgContainer.getAttribute('width');
+            const svgHeightAttr = svgContainer.getAttribute('height');
+            const viewBox = svgContainer.getAttribute('viewBox');
+            let svgWidth, svgHeight, svgCenterX, svgCenterY;
+            
+            if (svgWidthAttr && svgHeightAttr && !isNaN(parseFloat(svgWidthAttr)) && !isNaN(parseFloat(svgHeightAttr))) {
+                svgWidth = parseFloat(svgWidthAttr);
+                svgHeight = parseFloat(svgHeightAttr);
+                svgCenterX = svgWidth / 2;
+                svgCenterY = svgHeight / 2;
+                console.log(`Using SVG width/height attributes: ${svgWidth} x ${svgHeight}`);
+            } else if (viewBox) {
+                const vb = viewBox.split(/[\s,]+/).map(v => parseFloat(v.trim())).filter(v => !isNaN(v));
+                if (vb.length >= 4) {
+                    const vbWidth = vb[2];
+                    const vbHeight = vb[3];
+                    svgWidth = vbWidth;
+                    svgHeight = vbHeight;
+                    svgCenterX = vb[0] + vbWidth / 2;
+                    svgCenterY = vb[1] + vbHeight / 2;
+                    console.log(`Using SVG viewBox: ${vb[0]},${vb[1]} ${vbWidth}x${vbHeight}`);
+                } else {
+                    svgWidth = maxX - minX;
+                    svgHeight = maxY - minY;
+                    svgCenterX = (minX + maxX) / 2;
+                    svgCenterY = (minY + maxY) / 2;
+                }
+            } else {
+                svgWidth = maxX - minX;
+                svgHeight = maxY - minY;
+                svgCenterX = (minX + maxX) / 2;
+                svgCenterY = (minY + maxY) / 2;
+            }
+            
+            console.log(`Final SVG dimensions: ${svgWidth} x ${svgHeight}, center: (${svgCenterX}, ${svgCenterY})`);
             
             // Calculate scale factor: make the larger dimension ~100 units in Three.js space for better visibility
             const maxCoordDim = Math.max(svgWidth, svgHeight);
