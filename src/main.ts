@@ -29,17 +29,24 @@ import {
   ThreeState,
 } from './3d/three-setup';
 import { create3DMeshesFromPaths, calculateScaleFactor } from './3d/svg-to-3d';
+import { flattenSVG } from './utils/svg-flatten';
+import { downloadSTL, getSTLStats } from './3d/stl-export';
 
 // DOM Elements
 let fileInput: HTMLInputElement;
 let dropArea: HTMLElement;
 let svgDisplayOriginal: HTMLElement;
 let svgDisplaySimplified: HTMLElement;
+let svgDisplayFlattened: HTMLElement;
+let flattenedContainer: HTMLElement;
 let infoText: HTMLElement;
 let colorCountText: HTMLElement;
 let colorPaletteText: HTMLElement;
 let colorCountInput: HTMLInputElement;
 let create3DBtn: HTMLButtonElement;
+let flattenBtn: HTMLButtonElement;
+let exportSTLBtn: HTMLButtonElement;
+let stlInfoText: HTMLElement;
 let container3D: HTMLElement;
 let colorHeightsContainer: HTMLElement;
 let colorHeightsList: HTMLElement;
@@ -48,6 +55,7 @@ let colorHeightsList: HTMLElement;
 let state: AppState = {
   originalSVGContent: '',
   simplifiedSVGContent: '',
+  flattenedSVGContent: '',
   originalColors: [],
   colorMap: {},
   colorHeights: {},
@@ -55,6 +63,7 @@ let state: AppState = {
   camera: null,
   renderer: null,
   controls: null,
+  meshGroup: null,
 };
 
 let threeState: ThreeState = {
@@ -73,11 +82,16 @@ function initApp(): void {
   dropArea = document.getElementById('drop-area') as HTMLElement;
   svgDisplayOriginal = document.getElementById('svg-display-original') as HTMLElement;
   svgDisplaySimplified = document.getElementById('svg-display-simplified') as HTMLElement;
+  svgDisplayFlattened = document.getElementById('svg-display-flattened') as HTMLElement;
+  flattenedContainer = document.getElementById('flattened-container') as HTMLElement;
   infoText = document.getElementById('info') as HTMLElement;
   colorCountText = document.getElementById('color-count') as HTMLElement;
   colorPaletteText = document.getElementById('color-palette') as HTMLElement;
   colorCountInput = document.getElementById('color-count-input') as HTMLInputElement;
   create3DBtn = document.getElementById('create-3d-btn') as HTMLButtonElement;
+  flattenBtn = document.getElementById('flatten-btn') as HTMLButtonElement;
+  exportSTLBtn = document.getElementById('export-stl-btn') as HTMLButtonElement;
+  stlInfoText = document.getElementById('stl-info') as HTMLElement;
   container3D = document.getElementById('3d-container') as HTMLElement;
   colorHeightsContainer = document.getElementById('color-heights-container') as HTMLElement;
   colorHeightsList = document.getElementById('color-heights-list') as HTMLElement;
@@ -87,8 +101,12 @@ function initApp(): void {
 
   // Initial UI state
   create3DBtn.disabled = true;
+  flattenBtn.disabled = true;
+  exportSTLBtn.disabled = true;
+  flattenedContainer.style.display = 'none';
   colorHeightsContainer.style.display = 'none';
   container3D.style.display = 'none';
+  if (stlInfoText) stlInfoText.textContent = '';
 
   // Mark app as initialized so window functions work
   appInitialized = true;
@@ -173,20 +191,26 @@ function displaySVG(file: File): void {
       colorPaletteText.textContent = '';
       state.originalSVGContent = '';
       state.simplifiedSVGContent = '';
+      state.flattenedSVGContent = '';
       state.originalColors = [];
       state.colorMap = {};
       container3D.style.display = 'none';
+      flattenedContainer.style.display = 'none';
       colorHeightsContainer.style.display = 'none';
       colorHeightsList.innerHTML = '';
       state.colorHeights = {};
       create3DBtn.disabled = true;
+      flattenBtn.disabled = true;
       return;
     }
 
     state.originalSVGContent = content;
     state.simplifiedSVGContent = '';
+    state.flattenedSVGContent = '';
     svgDisplayOriginal.innerHTML = content;
     svgDisplaySimplified.innerHTML = '';
+    svgDisplayFlattened.innerHTML = '';
+    flattenedContainer.style.display = 'none';
     infoText.textContent = `Loaded: ${file.name} (${formatFileSize(file.size)})`;
 
     // Count colors
@@ -197,22 +221,33 @@ function displaySVG(file: File): void {
 
     // Reset color map
     state.colorMap = {};
+    state.meshGroup = null;
     container3D.style.display = 'none';
+    flattenedContainer.style.display = 'none';
     colorHeightsContainer.style.display = 'none';
     colorHeightsList.innerHTML = '';
     state.colorHeights = {};
     create3DBtn.disabled = true;
+    flattenBtn.disabled = true;
+    exportSTLBtn.disabled = true;
+    if (stlInfoText) stlInfoText.textContent = '';
   };
 
   reader.onerror = () => {
     infoText.textContent = 'Error reading file';
     svgDisplayOriginal.innerHTML = '';
     svgDisplaySimplified.innerHTML = '';
+    svgDisplayFlattened.innerHTML = '';
     container3D.style.display = 'none';
+    flattenedContainer.style.display = 'none';
     colorHeightsContainer.style.display = 'none';
     colorHeightsList.innerHTML = '';
     state.colorHeights = {};
+    state.meshGroup = null;
     create3DBtn.disabled = true;
+    flattenBtn.disabled = true;
+    exportSTLBtn.disabled = true;
+    if (stlInfoText) stlInfoText.textContent = '';
   };
 
   reader.readAsText(file);
@@ -336,8 +371,12 @@ function simplifyColorsInternal(): void {
     .join('');
   colorHeightsContainer.style.display = 'block';
 
-  // Enable the 3D button
+  // Enable the flatten and 3D buttons
+  flattenBtn.disabled = false;
   create3DBtn.disabled = false;
+  state.flattenedSVGContent = '';
+  svgDisplayFlattened.innerHTML = '';
+  flattenedContainer.style.display = 'none';
 }
 
 /**
@@ -352,8 +391,10 @@ declare global {
   interface Window {
     setColorHeight: (color: string, height: string) => void;
     simplifyColors: () => void;
+    flattenSVG: () => void;
     create3DStructure: () => void;
     clearSVG: () => void;
+    exportSTL: () => void;
     selectSVGFile: () => void;
   }
 }
@@ -382,9 +423,9 @@ window.simplifyColors = () => {
   }
 };
 
-window.create3DStructure = () => {
+window.create3DStructure = async () => {
   if (appInitialized && typeof create3DStructureInternal === 'function') {
-    create3DStructureInternal();
+    await create3DStructureInternal();
   }
 };
 
@@ -394,13 +435,73 @@ window.clearSVG = () => {
   }
 };
 
+window.flattenSVG = async () => {
+  if (appInitialized && typeof flattenSVGInternal === 'function') {
+    await flattenSVGInternal();
+  }
+};
+
+window.exportSTL = () => {
+  if (appInitialized && typeof exportSTLInternal === 'function') {
+    exportSTLInternal();
+  }
+};
+
 /**
- * Create 3D structure from simplified SVG
+ * Flatten SVG to remove overlaps and merge same-color regions
  */
-function create3DStructureInternal(): void {
+async function flattenSVGInternal(): Promise<void> {
   if (!state.simplifiedSVGContent) {
     alert('Please simplify the colors first');
     return;
+  }
+
+  console.log('Flattening SVG...');
+  
+  try {
+    // Flatten the simplified SVG
+    state.flattenedSVGContent = await flattenSVG(state.simplifiedSVGContent);
+    
+    // Display the flattened SVG
+    svgDisplayFlattened.innerHTML = state.flattenedSVGContent;
+    flattenedContainer.style.display = 'block';
+    
+    console.log('SVG flattened successfully');
+    
+    // Use flattened SVG for 3D conversion
+    state.simplifiedSVGContent = state.flattenedSVGContent;
+    svgDisplaySimplified.innerHTML = state.flattenedSVGContent;
+    
+  } catch (error) {
+    console.error('Error flattening SVG:', error);
+    alert('Error flattening SVG: ' + (error as Error).message);
+  }
+}
+
+/**
+ * Create 3D structure from simplified SVG
+ */
+async function create3DStructureInternal(): Promise<void> {
+  if (!state.simplifiedSVGContent) {
+    alert('Please simplify the colors first');
+    return;
+  }
+
+  // If not yet flattened, flatten automatically
+  if (!state.flattenedSVGContent) {
+    console.log('Auto-flattening before 3D creation...');
+    try {
+      const flattened = await flattenSVG(state.simplifiedSVGContent);
+      state.flattenedSVGContent = flattened;
+      state.simplifiedSVGContent = flattened;
+      svgDisplaySimplified.innerHTML = flattened;
+      svgDisplayFlattened.innerHTML = flattened;
+      flattenedContainer.style.display = 'block';
+    } catch (error) {
+      console.error('Auto-flattening failed:', error);
+      alert('Auto-flattening failed: ' + (error as Error).message);
+      return;
+    }
   }
 
   // Show the 3D container
@@ -468,6 +569,12 @@ function create3DStructureInternal(): void {
     console.log(`Total meshes in group: ${group.children.length}`);
   }
 
+  // Store the group reference for STL export
+  state.meshGroup = group;
+
+  // Enable STL export button
+  exportSTLBtn.disabled = false;
+
   // Position camera to see the entire scene
   if (threeState.camera && threeState.scene) {
     positionCameraForScene(threeState.camera, boundingBox, scaleFactor);
@@ -483,15 +590,60 @@ function create3DStructureInternal(): void {
 function clearSVGInternal(): void {
   svgDisplayOriginal.innerHTML = '';
   svgDisplaySimplified.innerHTML = '';
+  svgDisplayFlattened.innerHTML = '';
   infoText.textContent = 'No SVG loaded yet';
   colorCountText.textContent = '';
   colorPaletteText.textContent = '';
   fileInput.value = '';
   container3D.style.display = 'none';
+  flattenedContainer.style.display = 'none';
   colorHeightsContainer.style.display = 'none';
   colorHeightsList.innerHTML = '';
   state.colorHeights = {};
+  state.flattenedSVGContent = '';
+  state.meshGroup = null;
   create3DBtn.disabled = true;
+  flattenBtn.disabled = true;
+  exportSTLBtn.disabled = true;
+  if (stlInfoText) stlInfoText.textContent = '';
+}
+
+/**
+ * Export the 3D structure as STL file for 3D printing
+ */
+function exportSTLInternal(): void {
+  if (!state.meshGroup) {
+    alert('Please create a 3D structure first');
+    return;
+  }
+
+  const fileName = '3d-poster';
+  const stats = getSTLStats(state.meshGroup);
+  
+  if (stats.faceCount === 0) {
+    alert('No geometry found to export');
+    return;
+  }
+
+  console.log(`Exporting 3D structure: ${stats.meshCount} meshes, ${stats.faceCount} faces`);
+  
+  // Update STL info display
+  if (stlInfoText) {
+    stlInfoText.textContent = `Exporting ${stats.faceCount} faces as STL...`;
+  }
+
+  // Download the STL file
+  downloadSTL(state.meshGroup, {
+    format: 'binary',
+    fileName: fileName,
+  });
+
+  // Update STL info after export
+  if (stlInfoText) {
+    setTimeout(() => {
+      stlInfoText.textContent = `Last export: ${stats.faceCount} faces, ${stats.meshCount} meshes`;
+    }, 500);
+  }
 }
 
 // Initialize the app when DOM is loaded

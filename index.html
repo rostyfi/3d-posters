@@ -73,11 +73,12 @@
             min-height: 200px;
             margin-top: 20px;
         }
-        #svg-display-original, #svg-display-simplified {
+        #svg-display-original, #svg-display-simplified, #svg-display-flattened {
             width: 100%;
         }
         #svg-display-original svg,
-        #svg-display-simplified svg {
+        #svg-display-simplified svg,
+        #svg-display-flattened svg {
             width: 100%;
             height: auto;
             display: block;
@@ -131,13 +132,17 @@
         <div class="controls">
             <input type="number" id="color-count-input" min="1" max="256" value="4" />
             <button onclick="window.simplifyColors()">Simplify Colors</button>
-            <button onclick="window.create3DStructure()" id="create-3d-btn" disabled>Create 3D Structure</button>
+            <button onclick="(async()=>{await window.flattenSVG()})()" id="flatten-btn" disabled>Flatten SVG</button>
+            <button onclick="(async()=>{await window.create3DStructure()})()" id="create-3d-btn" disabled>Create 3D Structure</button>
+            <button onclick="window.exportSTL()" id="export-stl-btn" disabled>Export STL for 3D Printing</button>
         </div>
         
         <div id="color-heights-container">
             <div>Color Heights (mm):</div>
             <div id="color-heights-list"></div>
         </div>
+        
+        <div id="stl-info" class="info"></div>
         
         <div id="svg-container">
             <div class="info" id="info">No SVG loaded yet</div>
@@ -151,6 +156,10 @@
                 <div style="flex: 1; border: 1px solid #ddd; border-radius: 4px; padding: 0; position: relative;">
                     <div style="position: absolute; top: 0; left: 0; right: 0; text-align: center; color: #888; font-size: 14px; background: rgba(255,255,255,0.8); padding: 2px 0;">Simplified</div>
                     <div id="svg-display-simplified" style="margin: 0; padding: 0;"></div>
+                </div>
+                <div id="flattened-container" style="flex: 1; border: 1px solid #ddd; border-radius: 4px; padding: 0; position: relative; display: none;">
+                    <div style="position: absolute; top: 0; left: 0; right: 0; text-align: center; color: #888; font-size: 14px; background: rgba(255,255,255,0.8); padding: 2px 0;">Flattened</div>
+                    <div id="svg-display-flattened" style="margin: 0; padding: 0; min-height: 200px;"></div>
                 </div>
                 <div id="3d-container" style="flex: 1; border: 1px solid #ddd; border-radius: 4px; padding: 0; position: relative; display: none;">
                     <div style="position: absolute; top: 0; left: 0; right: 0; text-align: center; color: #888; font-size: 14px; background: rgba(255,255,255,0.8); padding: 2px 0;">3D Structure View</div>

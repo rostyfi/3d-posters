@@ -4,6 +4,7 @@
 
 import type { Scene, Camera, WebGLRenderer } from 'three';
 import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
+import * as THREE from 'three';
 
 /**
  * RGB Color representation
@@ -89,6 +90,7 @@ export interface BoundingBox {
 export interface AppState {
   originalSVGContent: string;
   simplifiedSVGContent: string;
+  flattenedSVGContent: string;
   originalColors: string[];
   colorMap: ColorMap;
   colorHeights: ColorHeights;
@@ -96,6 +98,8 @@ export interface AppState {
   camera: Camera | null;
   renderer: WebGLRenderer | null;
   controls: OrbitControls | null;
+  /** Reference to the 3D group containing all extruded meshes */
+  meshGroup: THREE.Group | null;
 }
 
 /**
