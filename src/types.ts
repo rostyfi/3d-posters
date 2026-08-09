@@ -100,6 +100,15 @@ export interface AppState {
   controls: OrbitControls | null;
   /** Reference to the 3D group containing all extruded meshes */
   meshGroup: THREE.Group | null;
+  /** Target export dimensions in mm */
+  exportWidthMM: number;
+  exportHeightMM: number;
+  /** Original SVG aspect ratio (width / height) */
+  originalAspectRatio: number;
+  /** Original SVG bounding box for scaling */
+  svgBoundingBox: BoundingBox | null;
+  /** Scale factor used for 3D conversion */
+  svgScaleFactor: number;
 }
 
 /**

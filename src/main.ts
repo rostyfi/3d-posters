@@ -3,6 +3,7 @@
  * SVG Viewer with color simplification and 3D conversion
  */
 
+import * as THREE from 'three';
 import { SVGLoader } from 'three/examples/jsm/loaders/SVGLoader';
 import { AppState } from './types';
 import {
@@ -30,7 +31,7 @@ import {
 } from './3d/three-setup';
 import { create3DMeshesFromPaths, calculateScaleFactor } from './3d/svg-to-3d';
 import { flattenSVG } from './utils/svg-flatten';
-import { downloadSTL, getSTLStats } from './3d/stl-export';
+import { downloadSTL, getSTLStats, createScaledClone } from './3d/stl-export';
 
 // DOM Elements
 let fileInput: HTMLInputElement;
@@ -47,6 +48,9 @@ let create3DBtn: HTMLButtonElement;
 let flattenBtn: HTMLButtonElement;
 let exportSTLBtn: HTMLButtonElement;
 let stlInfoText: HTMLElement;
+let exportSizeContainer: HTMLElement;
+let exportWidthInput: HTMLInputElement;
+let exportHeightInput: HTMLInputElement;
 let container3D: HTMLElement;
 let colorHeightsContainer: HTMLElement;
 let colorHeightsList: HTMLElement;
@@ -64,6 +68,11 @@ let state: AppState = {
   renderer: null,
   controls: null,
   meshGroup: null,
+  exportWidthMM: 100,
+  exportHeightMM: 100,
+  originalAspectRatio: 1,
+  svgBoundingBox: null,
+  svgScaleFactor: 1,
 };
 
 let threeState: ThreeState = {
@@ -92,6 +101,9 @@ function initApp(): void {
   flattenBtn = document.getElementById('flatten-btn') as HTMLButtonElement;
   exportSTLBtn = document.getElementById('export-stl-btn') as HTMLButtonElement;
   stlInfoText = document.getElementById('stl-info') as HTMLElement;
+  exportSizeContainer = document.getElementById('export-size-container') as HTMLElement;
+  exportWidthInput = document.getElementById('export-width') as HTMLInputElement;
+  exportHeightInput = document.getElementById('export-height') as HTMLInputElement;
   container3D = document.getElementById('3d-container') as HTMLElement;
   colorHeightsContainer = document.getElementById('color-heights-container') as HTMLElement;
   colorHeightsList = document.getElementById('color-heights-list') as HTMLElement;
@@ -107,6 +119,13 @@ function initApp(): void {
   colorHeightsContainer.style.display = 'none';
   container3D.style.display = 'none';
   if (stlInfoText) stlInfoText.textContent = '';
+  if (exportSizeContainer) exportSizeContainer.style.display = 'none';
+
+  // Initialize export size inputs
+  if (exportWidthInput && exportHeightInput) {
+    exportWidthInput.value = String(state.exportWidthMM);
+    exportHeightInput.value = String(state.exportHeightMM);
+  }
 
   // Mark app as initialized so window functions work
   appInitialized = true;
@@ -120,6 +139,13 @@ function initApp(): void {
 function initEventListeners(): void {
   // Preview colors when input changes
   colorCountInput.addEventListener('change', previewColorSimplification);
+
+  // Export size inputs - maintain aspect ratio
+  if (exportWidthInput && exportHeightInput) {
+    exportWidthInput.addEventListener('change', (e) => updateExportSize('width', parseFloat((e.target as HTMLInputElement).value)));
+    exportHeightInput.addEventListener('change', (e) => updateExportSize('height', parseFloat((e.target as HTMLInputElement).value)));
+  }
+
 
   // Handle file selection
   fileInput.addEventListener('change', (e: Event) => {
@@ -222,10 +248,14 @@ function displaySVG(file: File): void {
     // Reset color map
     state.colorMap = {};
     state.meshGroup = null;
+    state.svgBoundingBox = null;
+    state.svgScaleFactor = 1;
+    state.originalAspectRatio = 1;
     container3D.style.display = 'none';
     flattenedContainer.style.display = 'none';
     colorHeightsContainer.style.display = 'none';
     colorHeightsList.innerHTML = '';
+    if (exportSizeContainer) exportSizeContainer.style.display = 'none';
     state.colorHeights = {};
     create3DBtn.disabled = true;
     flattenBtn.disabled = true;
@@ -242,8 +272,12 @@ function displaySVG(file: File): void {
     flattenedContainer.style.display = 'none';
     colorHeightsContainer.style.display = 'none';
     colorHeightsList.innerHTML = '';
+    if (exportSizeContainer) exportSizeContainer.style.display = 'none';
     state.colorHeights = {};
     state.meshGroup = null;
+    state.svgBoundingBox = null;
+    state.svgScaleFactor = 1;
+    state.originalAspectRatio = 1;
     create3DBtn.disabled = true;
     flattenBtn.disabled = true;
     exportSTLBtn.disabled = true;
@@ -384,6 +418,33 @@ function simplifyColorsInternal(): void {
  */
 function setColorHeightInternal(color: string, height: string): void {
   state.colorHeights[color] = parseFloat(height);
+}
+
+/**
+ * Update export size while maintaining aspect ratio
+ * @param changed - Which dimension was changed ('width' or 'height')
+ * @param value - The new value in mm
+ */
+function updateExportSize(changed: 'width' | 'height', value: number): void {
+  if (value < 1 || value > 10000) return;
+
+  const aspectRatio = state.originalAspectRatio;
+
+  if (changed === 'width') {
+    state.exportWidthMM = value;
+    state.exportHeightMM = value / aspectRatio;
+  } else {
+    state.exportHeightMM = value;
+    state.exportWidthMM = value * aspectRatio;
+  }
+
+  // Update both input fields
+  if (exportWidthInput) {
+    exportWidthInput.value = state.exportWidthMM.toFixed(1);
+  }
+  if (exportHeightInput) {
+    exportHeightInput.value = state.exportHeightMM.toFixed(1);
+  }
 }
 
 // Expose to global scope for inline event handlers
@@ -547,8 +608,25 @@ async function create3DStructureInternal(): Promise<void> {
   // Calculate bounding box from all paths
   const boundingBox = calculateBoundingBox(paths);
 
+  // Store bounding box and scale factor for later export
+  state.svgBoundingBox = boundingBox;
+
+  // Store aspect ratio for export size
+  if (boundingBox.width > 0 && boundingBox.height > 0) {
+    state.originalAspectRatio = boundingBox.width / boundingBox.height;
+    console.log(`SVG aspect ratio: ${state.originalAspectRatio.toFixed(4)}`);
+  } else {
+    state.originalAspectRatio = 1;
+  }
+
+  // Show export size container
+  if (exportSizeContainer) {
+    exportSizeContainer.style.display = 'block';
+  }
+
   // Calculate scale factor: make the larger dimension ~100 units in Three.js space for better visibility
   const scaleFactor = calculateScaleFactor(boundingBox);
+  state.svgScaleFactor = scaleFactor;
   console.log(`SVG dimensions: ${boundingBox.width} x ${boundingBox.height}, scaleFactor: ${scaleFactor}`);
 
   // Extract colors from simplified SVG for matching
@@ -599,9 +677,17 @@ function clearSVGInternal(): void {
   flattenedContainer.style.display = 'none';
   colorHeightsContainer.style.display = 'none';
   colorHeightsList.innerHTML = '';
+  if (exportSizeContainer) exportSizeContainer.style.display = 'none';
   state.colorHeights = {};
   state.flattenedSVGContent = '';
   state.meshGroup = null;
+  state.svgBoundingBox = null;
+  state.svgScaleFactor = 1;
+  state.originalAspectRatio = 1;
+  state.exportWidthMM = 100;
+  state.exportHeightMM = 100;
+  if (exportWidthInput) exportWidthInput.value = '100';
+  if (exportHeightInput) exportHeightInput.value = '100';
   create3DBtn.disabled = true;
   flattenBtn.disabled = true;
   exportSTLBtn.disabled = true;
@@ -617,8 +703,23 @@ function exportSTLInternal(): void {
     return;
   }
 
+  if (!state.svgBoundingBox) {
+    alert('SVG bounding box not available');
+    return;
+  }
+
   const fileName = '3d-poster';
-  const stats = getSTLStats(state.meshGroup);
+
+  // Create a scaled clone based on export dimensions
+  const scaledGroup = createScaledClone(
+    state.meshGroup,
+    state.svgBoundingBox,
+    state.svgScaleFactor,
+    state.exportWidthMM,
+    state.exportHeightMM
+  );
+
+  const stats = getSTLStats(scaledGroup);
   
   if (stats.faceCount === 0) {
     alert('No geometry found to export');
@@ -626,22 +727,30 @@ function exportSTLInternal(): void {
   }
 
   console.log(`Exporting 3D structure: ${stats.meshCount} meshes, ${stats.faceCount} faces`);
+  console.log(`Export size: ${state.exportWidthMM}mm x ${state.exportHeightMM}mm`);
   
   // Update STL info display
   if (stlInfoText) {
-    stlInfoText.textContent = `Exporting ${stats.faceCount} faces as STL...`;
+    stlInfoText.textContent = `Exporting ${stats.faceCount} faces (${state.exportWidthMM}mm x ${state.exportHeightMM}mm) as STL...`;
   }
 
   // Download the STL file
-  downloadSTL(state.meshGroup, {
+  downloadSTL(scaledGroup, {
     format: 'binary',
     fileName: fileName,
+  });
+
+  // Clean up the scaled clone
+  scaledGroup.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      child.geometry.dispose();
+    }
   });
 
   // Update STL info after export
   if (stlInfoText) {
     setTimeout(() => {
-      stlInfoText.textContent = `Last export: ${stats.faceCount} faces, ${stats.meshCount} meshes`;
+      stlInfoText.textContent = `Last export: ${stats.faceCount} faces, ${stats.meshCount} meshes (${state.exportWidthMM}mm x ${state.exportHeightMM}mm)`;
     }, 500);
   }
 }

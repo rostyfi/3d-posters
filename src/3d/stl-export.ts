@@ -15,6 +15,10 @@ export interface STLExportOptions {
   format: 'ascii' | 'binary';
   /** Name for the exported file (without extension) */
   fileName?: string;
+  /** Target width in mm for scaling */
+  targetWidthMM?: number;
+  /** Target height in mm for scaling */
+  targetHeightMM?: number;
 }
 
 /**
@@ -382,4 +386,58 @@ export function getSTLStats(object: THREE.Object3D): { faceCount: number; meshCo
   });
 
   return { faceCount, meshCount };
+}
+
+/**
+ * Create a scaled clone of an object for export
+ * Uses the stored SVG bounding box and scale factor to calculate proper scaling
+ * @param object - Source object to clone
+ * @param svgBoundingBox - Original SVG bounding box
+ * @param svgScaleFactor - Scale factor used to convert SVG to 3D
+ * @param targetWidthMM - Target width in millimeters
+ * @param targetHeightMM - Target height in millimeters
+ * @returns A new group with scaled geometry
+ */
+export function createScaledClone(
+  object: THREE.Object3D,
+  svgBoundingBox: { width: number; height: number },
+  svgScaleFactor: number,
+  targetWidthMM: number,
+  targetHeightMM: number
+): THREE.Group {
+  // Calculate current dimensions in Three.js units
+  // The 3D group has already been scaled by svgScaleFactor
+  const currentWidth = svgBoundingBox.width * svgScaleFactor;
+  const currentHeight = svgBoundingBox.height * svgScaleFactor;
+
+  // Avoid division by zero
+  if (currentWidth === 0 || currentHeight === 0) {
+    console.warn('Cannot scale object with zero dimensions');
+    return object.clone() as THREE.Group;
+  }
+
+  // Calculate scale factors to reach target dimensions
+  // In the 3D scene, 1mm of height = 0.5 units, but for export we want 1mm = 1 unit
+  // So we need to convert from Three.js units to mm
+  const mmToThreeJsRatio = 0.5; // 1mm = 0.5 units in the current setup
+  const threeJsToMM = 1 / mmToThreeJsRatio; // 2 units = 1mm
+  
+  // Current size in mm
+  const currentWidthMM = currentWidth * threeJsToMM;
+  const currentHeightMM = currentHeight * threeJsToMM;
+
+  // Calculate scale factors
+  const scaleX = targetWidthMM / currentWidthMM;
+  const scaleY = targetHeightMM / currentHeightMM;
+  const scaleZ = 1; // Keep Z scale at 1 (heights are relative)
+
+  console.log(`Current 3D size: ${currentWidthMM.toFixed(2)}x${currentHeightMM.toFixed(2)}mm`);
+  console.log(`Target size: ${targetWidthMM}x${targetHeightMM}mm`);
+  console.log(`Scale factors: X=${scaleX.toFixed(4)}, Y=${scaleY.toFixed(4)}, Z=${scaleZ}`);
+
+  // Clone the object and apply scaling
+  const clone = object.clone();
+  clone.scale.set(scaleX, scaleY, scaleZ);
+
+  return clone as THREE.Group;
 }

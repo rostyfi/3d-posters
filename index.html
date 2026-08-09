@@ -144,6 +144,15 @@
         
         <div id="stl-info" class="info"></div>
         
+        <div id="export-size-container" style="margin-top: 10px; display: none;">
+          <div style="display: flex; align-items: center; gap: 10px; justify-content: center;">
+            <span>Export Size (mm):</span>
+            <input type="number" id="export-width" min="1" max="10000" value="100" step="0.1" style="width: 80px;" />
+            <span>x</span>
+            <input type="number" id="export-height" min="1" max="10000" value="100" step="0.1" style="width: 80px;" />
+          </div>
+        </div>
+        
         <div id="svg-container">
             <div class="info" id="info">No SVG loaded yet</div>
             <div class="info" id="color-count"></div>
