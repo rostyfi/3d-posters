@@ -10,6 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@flatten-js/boolean-op": "^1.1.4",
+    "@flatten-js/core": "^1.6.13",
     "three": "^0.128.0"
   },
   "devDependencies": {

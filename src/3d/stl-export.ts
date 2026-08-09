@@ -413,31 +413,79 @@ export function createScaledClone(
   // Avoid division by zero
   if (currentWidth === 0 || currentHeight === 0) {
     console.warn('Cannot scale object with zero dimensions');
-    return object.clone() as THREE.Group;
+    const errorClone = object.clone() as THREE.Group;
+    // Clone geometries to avoid modifying the original
+    errorClone.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.geometry = child.geometry.clone();
+      }
+    });
+    return errorClone;
   }
 
   // Calculate scale factors to reach target dimensions
-  // In the 3D scene, 1mm of height = 0.5 units, but for export we want 1mm = 1 unit
-  // So we need to convert from Three.js units to mm
-  const mmToThreeJsRatio = 0.5; // 1mm = 0.5 units in the current setup
-  const threeJsToMM = 1 / mmToThreeJsRatio; // 2 units = 1mm
-  
-  // Current size in mm
-  const currentWidthMM = currentWidth * threeJsToMM;
-  const currentHeightMM = currentHeight * threeJsToMM;
+  // In the 3D scene:
+  //   - X and Y are scaled by svgScaleFactor to fit the SVG in the view
+  //   - Z (height) uses: heightUnits = heightMM * 0.5 (1mm = 0.5 Three.js units for visibility)
+  // For STL export, we want 1mm = 1 STL unit, so we need to convert:
+  //   - X and Y: scale by (targetMM / currentThreeJSUnits) to reach desired physical size
+  //   - Z: multiply by 2 to convert from Three.js units (1mm = 0.5 units) to mm (1mm = 1 unit)
+  const scaleX = targetWidthMM / currentWidth;
+  const scaleY = targetHeightMM / currentHeight;
+  const scaleZ = 2; // Convert Z from Three.js units (where 1mm = 0.5 units) to STL units (where 1mm = 1 unit)
 
-  // Calculate scale factors
-  const scaleX = targetWidthMM / currentWidthMM;
-  const scaleY = targetHeightMM / currentHeightMM;
-  const scaleZ = 1; // Keep Z scale at 1 (heights are relative)
-
-  console.log(`Current 3D size: ${currentWidthMM.toFixed(2)}x${currentHeightMM.toFixed(2)}mm`);
-  console.log(`Target size: ${targetWidthMM}x${targetHeightMM}mm`);
-  console.log(`Scale factors: X=${scaleX.toFixed(4)}, Y=${scaleY.toFixed(4)}, Z=${scaleZ}`);
+  console.log(`STL Export: Scaling to ${targetWidthMM}mm x ${targetHeightMM}mm`);
 
   // Clone the object and apply scaling
+  // We need to deep clone including geometries to avoid modifying the original
+  // First, ensure the original object's matrices are up to date
+  object.updateMatrixWorld(true);
+  
+  // Keep the Y-flip from the display group (scale.y = -1) since STL exporter uses raw geometry
+  // and SVG coordinates are Y-down. The group's Y-flip compensates for this.
+  // We multiply scaleY by -1 to preserve the flip while applying the size scaling.
   const clone = object.clone();
-  clone.scale.set(scaleX, scaleY, scaleZ);
+  
+  // Clone all geometries to avoid modifying the original
+  clone.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      const mesh = child as THREE.Mesh;
+      mesh.geometry = mesh.geometry.clone();
+    }
+  });
+  
+  clone.scale.set(scaleX, scaleY * -1, scaleZ);
+  
+  // Update the clone's matrices to ensure they're current
+  clone.updateMatrixWorld(true);
+  
+  // Bake the transform matrix into all geometries so STL export gets correct positions/sizes
+  // This applies the scale, rotation, and position to the geometry vertices directly
+  clone.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      const mesh = child as THREE.Mesh;
+      
+      // Apply the mesh's world matrix to its geometry
+      // This bakes in all transforms (position, rotation, scale) from the entire hierarchy
+      mesh.geometry.applyMatrix4(mesh.matrixWorld);
+      
+      // Transform normals using the normal matrix (upper 3x3 of matrixWorld, inverted and transposed)
+      // For now, recompute normals to ensure they're correct after transformation
+      mesh.geometry.computeVertexNormals();
+      
+      // Reset the mesh's transform so the geometry is now in the correct position/scale
+      mesh.position.set(0, 0, 0);
+      mesh.rotation.set(0, 0, 0);
+      mesh.scale.set(1, 1, 1);
+      mesh.updateMatrix();
+    }
+  });
+  
+  // Reset the clone's transform since the geometries now have baked-in transforms
+  clone.position.set(0, 0, 0);
+  clone.rotation.set(0, 0, 0);
+  clone.scale.set(1, 1, 1);
+  clone.updateMatrix();
 
   return clone as THREE.Group;
 }

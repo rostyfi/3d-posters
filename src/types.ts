@@ -35,7 +35,7 @@ export type AnyColor = string | RGBColor;
 export type ColorMap = Record<string, string>;
 
 /**
- * Mapping from color to height in millimeters
+ * Mapping from color to height in layers (integer count)
  */
 export type ColorHeights = Record<string, number>;
 
@@ -93,6 +93,7 @@ export interface AppState {
   flattenedSVGContent: string;
   originalColors: string[];
   colorMap: ColorMap;
+  /** Mapping from color to height in layers (not mm) */
   colorHeights: ColorHeights;
   scene: Scene | null;
   camera: Camera | null;
@@ -109,6 +110,8 @@ export interface AppState {
   svgBoundingBox: BoundingBox | null;
   /** Scale factor used for 3D conversion */
   svgScaleFactor: number;
+  /** Height of a single layer in millimeters */
+  layerHeightMM: number;
 }
 
 /**

@@ -54,6 +54,7 @@ let exportHeightInput: HTMLInputElement;
 let container3D: HTMLElement;
 let colorHeightsContainer: HTMLElement;
 let colorHeightsList: HTMLElement;
+let layerHeightInput: HTMLInputElement;
 
 // Application State
 let state: AppState = {
@@ -73,6 +74,7 @@ let state: AppState = {
   originalAspectRatio: 1,
   svgBoundingBox: null,
   svgScaleFactor: 1,
+  layerHeightMM: 0.2,
 };
 
 let threeState: ThreeState = {
@@ -107,6 +109,12 @@ function initApp(): void {
   container3D = document.getElementById('3d-container') as HTMLElement;
   colorHeightsContainer = document.getElementById('color-heights-container') as HTMLElement;
   colorHeightsList = document.getElementById('color-heights-list') as HTMLElement;
+  layerHeightInput = document.getElementById('layer-height') as HTMLInputElement;
+
+  // Initialize layer height input
+  if (layerHeightInput) {
+    layerHeightInput.value = String(state.layerHeightMM);
+  }
 
   // Initialize event listeners
   initEventListeners();
@@ -144,6 +152,14 @@ function initEventListeners(): void {
   if (exportWidthInput && exportHeightInput) {
     exportWidthInput.addEventListener('change', (e) => updateExportSize('width', parseFloat((e.target as HTMLInputElement).value)));
     exportHeightInput.addEventListener('change', (e) => updateExportSize('height', parseFloat((e.target as HTMLInputElement).value)));
+  }
+
+  // Layer height input
+  if (layerHeightInput) {
+    layerHeightInput.addEventListener('change', (e) => {
+      state.layerHeightMM = parseFloat((e.target as HTMLInputElement).value);
+      updateColorHeightsDisplay();
+    });
   }
 
 
@@ -390,19 +406,10 @@ function simplifyColorsInternal(): void {
 
   // Setup color heights UI
   state.colorHeights = {};
-  colorHeightsList.innerHTML = newColors
-    .map((color) => {
-      state.colorHeights[color] = 1; // Default height: 1mm
-      return `
-        <div style="display: flex; align-items: center; margin: 5px 0; gap: 10px;">
-          <span style="background:${color}; color:${getContrastColor(color)}; padding:2px 6px; border-radius:3px; min-width: 60px;">${color}</span>
-          <input type="number" value="1" min="0.1" step="0.1" 
-                 onchange="window.setColorHeight('${color}', this.value)" 
-                 style="width: 60px;" /> mm
-        </div>
-      `;
-    })
-    .join('');
+  newColors.forEach((color) => {
+    state.colorHeights[color] = 1; // Default height: 1 layer
+  });
+  updateColorHeightsDisplay();
   colorHeightsContainer.style.display = 'block';
 
   // Enable the flatten and 3D buttons
@@ -417,7 +424,30 @@ function simplifyColorsInternal(): void {
  * Set height for a specific color
  */
 function setColorHeightInternal(color: string, height: string): void {
-  state.colorHeights[color] = parseFloat(height);
+  state.colorHeights[color] = parseInt(height, 10);
+  updateColorHeightsDisplay();
+}
+
+/**
+ * Update the color heights display to show layer counts and calculated mm values
+ */
+function updateColorHeightsDisplay(): void {
+  const colors = Object.keys(state.colorHeights);
+  colorHeightsList.innerHTML = colors
+    .map((color) => {
+      const layers = state.colorHeights[color];
+      const heightMM = state.layerHeightMM * layers;
+      return `
+        <div style="display: flex; align-items: center; margin: 5px 0; gap: 10px;">
+          <span style="background:${color}; color:${getContrastColor(color)}; padding:2px 6px; border-radius:3px; min-width: 60px;">${color}</span>
+          <input type="number" value="${layers}" min="0" step="1" 
+                 onchange="window.setColorHeight('${color}', this.value)" 
+                 style="width: 60px;" /> layers
+          <span style="color: #888; font-size: 12px;">= ${heightMM.toFixed(2)} mm</span>
+        </div>
+      `;
+    })
+    .join('');
 }
 
 /**
@@ -658,7 +688,8 @@ async function create3DStructureInternal(): Promise<void> {
     state.colorHeights,
     simplifiedColors,
     scaleFactor,
-    boundingBox
+    boundingBox,
+    state.layerHeightMM
   );
 
   if (threeState.scene) {
@@ -705,8 +736,10 @@ function clearSVGInternal(): void {
   state.originalAspectRatio = 1;
   state.exportWidthMM = 100;
   state.exportHeightMM = 100;
+  state.layerHeightMM = 0.2;
   if (exportWidthInput) exportWidthInput.value = '100';
   if (exportHeightInput) exportHeightInput.value = '100';
+  if (layerHeightInput) layerHeightInput.value = '0.2';
   create3DBtn.disabled = true;
   flattenBtn.disabled = true;
   exportSTLBtn.disabled = true;

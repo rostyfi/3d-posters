@@ -145,20 +145,28 @@ echo ""
 print_header "Ready to go!"
 
 # Optional: Ask if user wants to start a server
-read -p "Would you like to start the development server now? (y/N): " -n 1 -r
-echo ""
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    print_info "Starting development server..."
-    echo "Press Ctrl+C to stop the server"
-    echo ""
-    npm run dev
-else
-    read -p "Would you like to start a production server on port 8000? (y/N): " -n 1 -r
+# Only prompt if stdin is a terminal (interactive mode) and not a pipe
+if [ -t 0 ] && [ -z "$NONINTERACTIVE" ]; then
+    read -p "Would you like to start the development server now? (y/N): " -n 1 -r
     echo ""
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        print_info "Starting production server on http://localhost:8000..."
+        print_info "Starting development server..."
         echo "Press Ctrl+C to stop the server"
         echo ""
-        cd dist && python3 -m http.server 8000 --directory .
+        npm run dev
+    else
+        read -p "Would you like to start a production server on port 8000? (y/N): " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Starting production server on http://localhost:8000..."
+            echo "Press Ctrl+C to stop the server"
+            echo ""
+            cd dist && python3 -m http.server 8000 --directory .
+        fi
     fi
+else
+    print_info "Running non-interactively. Skipping server startup prompts."
+    print_info "To start a server manually:"
+    echo "  npm run dev          - Development server"
+    echo "  python3 -m http.server 8000 --directory dist  - Production server"
 fi

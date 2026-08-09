@@ -85,10 +85,11 @@ export function createMaterialFromColor(fillColor: string): THREE.MeshStandardMa
 /**
  * Convert SVG paths to 3D meshes
  * @param paths - SVG paths from THREE.SVGLoader
- * @param colorHeights - Mapping from color to height in mm
+ * @param colorHeights - Mapping from color to height in layers
  * @param simplifiedColors - Array of colors in the simplified palette
  * @param scaleFactor - Scale factor for converting SVG coordinates to 3D space
  * @param boundingBox - Overall SVG bounding box for positioning
+ * @param layerHeightMM - Height of a single layer in millimeters
  * @returns THREE.Group containing all 3D meshes
  */
 export function create3DMeshesFromPaths(
@@ -96,7 +97,8 @@ export function create3DMeshesFromPaths(
   colorHeights: ColorHeights,
   simplifiedColors: string[],
   scaleFactor: number,
-  boundingBox: BoundingBox
+  boundingBox: BoundingBox,
+  layerHeightMM: number
 ): THREE.Group {
   // Create a group to hold all 3D objects with Y flipped
   const group = new THREE.Group();
@@ -149,7 +151,8 @@ export function create3DMeshesFromPaths(
       matchedColor = fillColor;
     }
 
-    const heightMM = colorHeights[matchedColor] || 1;
+    const layers = colorHeights[matchedColor] || 1;
+    const heightMM = layers * layerHeightMM;
     const heightUnits = heightMM * 0.5; // Scale mm to Three.js units (1mm = 0.5 units for better visibility)
 
     // Create material from color
@@ -164,9 +167,9 @@ export function create3DMeshesFromPaths(
       });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.scale.set(scaleFactor, scaleFactor, 1);
-      // Don't position individually - shapes already have absolute SVG coordinates
-      // Just position z for height
-      mesh.position.z = heightUnits / 2;
+      // Don't position individually in X/Y - shapes already have absolute SVG coordinates
+      // Position at z=0 so the extrusion starts from the base
+      mesh.position.z = 0;
       group.add(mesh);
     }
   });
