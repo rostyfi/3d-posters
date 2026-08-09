@@ -615,6 +615,25 @@ async function create3DStructureInternal(): Promise<void> {
   if (boundingBox.width > 0 && boundingBox.height > 0) {
     state.originalAspectRatio = boundingBox.width / boundingBox.height;
     console.log(`SVG aspect ratio: ${state.originalAspectRatio.toFixed(4)}`);
+    
+    // Set initial export size based on SVG aspect ratio
+    // Use 100mm for the larger dimension
+    const defaultSize = 100;
+    if (boundingBox.width > boundingBox.height) {
+      state.exportWidthMM = defaultSize;
+      state.exportHeightMM = defaultSize / state.originalAspectRatio;
+    } else {
+      state.exportHeightMM = defaultSize;
+      state.exportWidthMM = defaultSize * state.originalAspectRatio;
+    }
+    
+    // Update the input fields
+    if (exportWidthInput) {
+      exportWidthInput.value = state.exportWidthMM.toFixed(1);
+    }
+    if (exportHeightInput) {
+      exportHeightInput.value = state.exportHeightMM.toFixed(1);
+    }
   } else {
     state.originalAspectRatio = 1;
   }
