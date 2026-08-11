@@ -227,11 +227,16 @@ function simplifyColorsPure(
 
 /**
  * Pure function: Flatten SVG content
+ * @param svgContent - SVG to flatten
+ * @param palette - Palette (hex strings) to snap pixels to, from the Simplify step
  */
-async function flattenSVGPure(svgContent: string): Promise<string | null> {
+async function flattenSVGPure(
+  svgContent: string,
+  palette?: string[]
+): Promise<string | null> {
   if (!svgContent) return null;
   try {
-    return await flattenSVG(svgContent);
+    return await flattenSVG(svgContent, palette);
   } catch (error) {
     console.error('Error flattening SVG:', error);
     return null;
@@ -361,7 +366,10 @@ async function handleFlattenSVG(): Promise<void> {
     return;
   }
 
-  const flattened = await flattenSVGPure(simplifyState.simplifiedSVGContent);
+  const flattened = await flattenSVGPure(
+    simplifyState.simplifiedSVGContent,
+    simplifyState.simplifiedColors
+  );
   
   if (!flattened) {
     alert('Failed to flatten SVG');

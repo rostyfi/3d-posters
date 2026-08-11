@@ -4,13 +4,43 @@
  * Creates merged rectangles for adjacent pixels of the same color
  */
 
+import { colorToRGB, findClosestCluster, rgbToHex } from './color';
+import { RGBColor } from '../types';
+
 /**
- * Flatten SVG by ensuring only one color per pixel
- * Uses rectangle merging for better performance
+ * Pack an 8-bit RGB triple into a single non-negative integer.
+ * Transparent pixels are represented separately (see colorGrid sentinel).
+ */
+function packRGB(r: number, g: number, b: number): number {
+  return ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff);
+}
+
+function packedToHex(packed: number): string {
+  const r = (packed >> 16) & 0xff;
+  const g = (packed >> 8) & 0xff;
+  const b = packed & 0xff;
+  return rgbToHex({ r, g, b });
+}
+
+/**
+ * Flatten SVG by ensuring only one color per pixel.
+ *
+ * When a `palette` is supplied (the output of the Simplify step), every opaque
+ * pixel is snapped to its nearest palette color. This eliminates the
+ * anti-aliased fringe colors that rasterization introduces at region edges,
+ * so each contiguous region collapses to a single color — i.e. one shape per
+ * region instead of thousands of 1-pixel slivers along every boundary.
+ *
+ * Uses rectangle merging for compact output.
+ *
  * @param svgContent - SVG string
+ * @param palette - Optional list of hex colors to snap pixels to
  * @returns Flattened SVG string
  */
-export async function flattenSVG(svgContent: string): Promise<string> {
+export async function flattenSVG(
+  svgContent: string,
+  palette?: string[]
+): Promise<string> {
   const viewBoxMatch = svgContent.match(/viewBox="([^"]+)"/);
   const widthMatch = svgContent.match(/width="([^"]+)"/);
   const heightMatch = svgContent.match(/height="([^"]+)"/);
@@ -38,6 +68,9 @@ export async function flattenSVG(svgContent: string): Promise<string> {
 
   try {
     ctx.clearRect(0, 0, width, height);
+    // Nearest-neighbour sampling: keeps palette colors intact at edges instead
+    // of generating blended intermediate values.
+    ctx.imageSmoothingEnabled = false;
 
     const tempSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     tempSvg.setAttribute('width', width.toString());
@@ -69,81 +102,90 @@ export async function flattenSVG(svgContent: string): Promise<string> {
     console.log('Flattening SVG using rectangle merging...');
     console.log(`Canvas size: ${width} x ${height}`);
 
-    // Create a 2D array of colors
-    const colorGrid: string[][] = [];
-    const alphaGrid: boolean[][] = [];
-    
+    // Resolve palette colors to RGB up front so the per-pixel snap is cheap.
+    const hasPalette = !!(palette && palette.length > 0);
+    const paletteRGB: RGBColor[] = hasPalette
+      ? palette!.map((c) => colorToRGB(c))
+      : [];
+    // Cache packed-RGB -> palette index so each distinct input color is resolved
+    // to its nearest palette entry at most once.
+    const snapCache = new Map<number, number>();
+
+    const snapToPalette = (packed: number): number => {
+      const cached = snapCache.get(packed);
+      if (cached !== undefined) return cached;
+      const r = (packed >> 16) & 0xff;
+      const g = (packed >> 8) & 0xff;
+      const b = packed & 0xff;
+      const idx = findClosestCluster({ r, g, b }, paletteRGB);
+      snapCache.set(packed, idx);
+      return idx;
+    };
+
+    // Flat color grid: non-negative integer per pixel.
+    //   hasPalette: index into paletteRGB (the snapped color).
+    //   no palette: packed RGB of the pixel itself.
+    //   -1 marks transparent pixels.
+    const colorGrid = new Int32Array(width * height);
+
     for (let y = 0; y < height; y++) {
-      colorGrid[y] = [];
-      alphaGrid[y] = [];
       for (let x = 0; x < width; x++) {
         const idx = (y * width + x) * 4;
+        const i = y * width + x;
         // Use threshold for alpha (anti-aliased edges)
         if (data[idx + 3] < 128) {
-          colorGrid[y][x] = '';
-          alphaGrid[y][x] = false;
+          colorGrid[i] = -1;
         } else {
-          colorGrid[y][x] = rgbToHex(data[idx], data[idx + 1], data[idx + 2]);
-          alphaGrid[y][x] = true;
+          const packed = packRGB(data[idx], data[idx + 1], data[idx + 2]);
+          colorGrid[i] = hasPalette ? snapToPalette(packed) : packed;
         }
       }
     }
 
     // Merge adjacent pixels into rectangles
-    const rects: {color: string, x: number, y: number, w: number, h: number}[] = [];
-    const processed: boolean[][] = [];
-    
-    for (let y = 0; y < height; y++) {
-      processed[y] = [];
-      for (let x = 0; x < width; x++) {
-        processed[y][x] = false;
-      }
-    }
+    const rects: { color: number, x: number, y: number, w: number, h: number }[] = [];
+    const processed = new Uint8Array(width * height);
 
     // Scan for rectangles
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
-        if (processed[y][x] || !alphaGrid[y][x]) continue;
-        
-        const color = colorGrid[y][x];
-        
+        const i = y * width + x;
+        if (processed[i] || colorGrid[i] === -1) continue;
+
+        const color = colorGrid[i];
+
         // Find the maximum width we can extend to the right
         let maxWidth = 1;
-        while (x + maxWidth < width && 
-               !processed[y][x + maxWidth] && 
-               alphaGrid[y][x + maxWidth] &&
-               colorGrid[y][x + maxWidth] === color) {
+        while (x + maxWidth < width) {
+          const ni = y * width + (x + maxWidth);
+          if (processed[ni] || colorGrid[ni] !== color) break;
           maxWidth++;
         }
-        
+
         // Find the maximum height we can extend downward
         let maxHeight = 1;
-        let canExtend = true;
-        
-        while (canExtend && y + maxHeight < height) {
-          canExtend = true;
+        while (y + maxHeight < height) {
+          let canExtend = true;
+          const rowBase = (y + maxHeight) * width + x;
           for (let dx = 0; dx < maxWidth; dx++) {
-            if (x + dx >= width || processed[y + maxHeight][x + dx] || 
-                !alphaGrid[y + maxHeight][x + dx] ||
-                colorGrid[y + maxHeight][x + dx] !== color) {
+            const ni = rowBase + dx;
+            if (processed[ni] || colorGrid[ni] !== color) {
               canExtend = false;
               break;
             }
           }
-          if (canExtend) {
-            maxHeight++;
-          }
+          if (!canExtend) break;
+          maxHeight++;
         }
-        
+
         // Mark all pixels in this rectangle as processed
         for (let dy = 0; dy < maxHeight; dy++) {
+          const rowBase = (y + dy) * width + x;
           for (let dx = 0; dx < maxWidth; dx++) {
-            if (y + dy < height && x + dx < width) {
-              processed[y + dy][x + dx] = true;
-            }
+            processed[rowBase + dx] = 1;
           }
         }
-        
+
         // Add the rectangle
         rects.push({
           color: color,
@@ -167,12 +209,15 @@ export async function flattenSVG(svgContent: string): Promise<string> {
     const newSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     newSvg.setAttribute('width', width.toString());
     newSvg.setAttribute('height', height.toString());
-    if (viewBoxMatch) newSvg.setAttribute('viewBox', viewBoxMatch[1]);
+    // Rectangles are in canvas pixel space (origin 0,0). Use a viewBox that
+    // matches that space rather than the (possibly offset/scaled) source
+    // viewBox, so geometry isn't shifted or shrunk on render.
+    newSvg.setAttribute('viewBox', `0 0 ${width} ${height}`);
     newSvg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
 
     // Create one path per color containing all rectangles
-    const rectsByColor: Record<string, {x: number, y: number, w: number, h: number}[]> = {};
-    
+    const rectsByColor: Record<number, { x: number, y: number, w: number, h: number }[]> = {};
+
     for (const rect of rects) {
       if (!rectsByColor[rect.color]) {
         rectsByColor[rect.color] = [];
@@ -181,24 +226,30 @@ export async function flattenSVG(svgContent: string): Promise<string> {
     }
 
     // Group colors and create paths
-    const sortedColors = Object.keys(rectsByColor).sort();
-    
+    const sortedColors = Object.keys(rectsByColor)
+      .map((k) => parseInt(k, 10))
+      .sort((a, b) => a - b);
+
     for (const color of sortedColors) {
       const colorRects = rectsByColor[color];
-      
+
       // Create one path with all rectangles
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      
+
       let pathData = '';
       for (const rect of colorRects) {
         pathData += `M ${rect.x} ${rect.y} h ${rect.w} v ${rect.h} h -${rect.w} z `;
       }
-      
+
+      const hex = hasPalette
+        ? palette![color]
+        : packedToHex(color);
+
       path.setAttribute('d', pathData.trim());
-      path.setAttribute('fill', color);
+      path.setAttribute('fill', hex);
       newSvg.appendChild(path);
-      
-      console.log(`  Color ${color}: ${colorRects.length} rectangles`);
+
+      console.log(`  Color ${hex}: ${colorRects.length} rectangles`);
     }
 
     const totalRects = Object.values(rectsByColor).reduce((sum, r) => sum + r.length, 0);
@@ -211,11 +262,4 @@ export async function flattenSVG(svgContent: string): Promise<string> {
     console.error('Flatten error:', error);
     return svgContent;
   }
-}
-
-/**
- * Convert RGB to hex
- */
-function rgbToHex(r: number, g: number, b: number): string {
-  return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1).toLowerCase()}`;
 }
