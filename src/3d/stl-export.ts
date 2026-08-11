@@ -190,7 +190,13 @@ function objectToSTLFaces(object: THREE.Object3D): STLFace[] {
   object.traverse((child) => {
     if (child instanceof THREE.Mesh) {
       const meshFaces = meshToSTLFaces(child);
-      faces.push(...meshFaces);
+      // Push one-by-one: a merged manifold mesh can contain hundreds of
+      // thousands of faces, and faces.push(...meshFaces) would place every
+      // element on the call stack and overflow it ("Maximum call stack size
+      // exceeded").
+      for (let i = 0; i < meshFaces.length; i++) {
+        faces.push(meshFaces[i]);
+      }
     }
   });
 

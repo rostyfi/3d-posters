@@ -32,7 +32,7 @@ import {
   positionCameraForScene,
   ThreeState,
 } from './3d/three-setup';
-import { create3DMeshesFromPaths, calculateScaleFactor } from './3d/svg-to-3d';
+import { create3DMeshesFromPaths, calculateScaleFactor, createManifoldGroupForExport } from './3d/svg-to-3d';
 import { flattenSVG } from './utils/svg-flatten';
 import { downloadSTL, getSTLStats, createScaledClone } from './3d/stl-export';
 
@@ -483,8 +483,30 @@ function handleExportSTL(): void {
 
   const fileName = '3d-poster';
 
+  // Build a single water-tight (manifold) solid from the flattened SVG for
+  // export. The display group uses separate per-shape meshes (so the z-buffer
+  // keeps colors crisp), but those produce coincident internal walls that make
+  // the STL non-manifold and unrepairable. The manifold builder constructs a
+  // proper height-field solid (one wall per shared boundary, T-junction-split
+  // edges) so the exported STL is printable. Falls back to the display group if
+  // manifold construction fails, so export still works (just not water-tight).
+  let exportSource: THREE.Object3D = structureState.meshGroup;
+  const manifoldGroup = createManifoldGroupForExport(
+    structureState.svgContentFor3D,
+    simplifyState.colorHeights,
+    structureState.scaleFactor,
+    structureState.boundingBox,
+    exportState.layerHeightMM
+  );
+  if (manifoldGroup) {
+    exportSource = manifoldGroup;
+    console.log('STL export: using manifold geometry');
+  } else {
+    console.warn('STL export: manifold build failed, falling back to display meshes (may not be water-tight)');
+  }
+
   const scaledGroup = createScaledClone(
-    structureState.meshGroup,
+    exportSource,
     structureState.boundingBox,
     structureState.scaleFactor,
     exportState.exportWidthMM,
