@@ -146,12 +146,24 @@ let exportState: ExportState = {
   layerHeightMM: 0.2,
 };
 
+/**
+ * Bumped whenever the pipeline state is reset or invalidated (new file, clear,
+ * re-simplify). Async handlers capture it before awaiting and discard their
+ * result if it changed, so a stale completion can't write outdated content
+ * into the displays.
+ */
+let stateGeneration = 0;
+
+/** True while a flatten is running; guards against concurrent invocations. */
+let isFlattening = false;
+
 // ============================================================================
 // Utility Functions
 // ============================================================================
 
 /** Reset all feature states to initial values */
 function resetAllFeatureStates(): void {
+  stateGeneration++;
   simplifyState = {
     simplifiedSVGContent: '',
     colorMap: {},
@@ -229,14 +241,16 @@ function simplifyColorsPure(
  * Pure function: Flatten SVG content
  * @param svgContent - SVG to flatten
  * @param palette - Palette (hex strings) to snap pixels to, from the Simplify step
+ * @param onProgress - Optional progress callback (status text) for UI feedback
  */
 async function flattenSVGPure(
   svgContent: string,
-  palette?: string[]
+  palette?: string[],
+  onProgress?: (status: string) => void
 ): Promise<string | null> {
   if (!svgContent) return null;
   try {
-    return await flattenSVG(svgContent, palette);
+    return await flattenSVG(svgContent, palette, onProgress);
   } catch (error) {
     console.error('Error flattening SVG:', error);
     return null;
@@ -305,6 +319,8 @@ async function create3DPure(
 function handleSimplifyColors(): void {
   console.log('Simplify Colors handler - START');
 
+  stateGeneration++; // invalidates any in-flight flatten
+
   const targetCount = parseInt(colorCountInput.value);
   if (targetCount < 1 || targetCount > 256) {
     alert('Please enter a number between 1 and 256');
@@ -357,6 +373,11 @@ function handleSimplifyColors(): void {
 /**
  * HANDLER: Flatten SVG
  * Isolated: Reads simplifyState, writes flattenState only
+ *
+ * The flatten pipeline is CPU-heavy and cooperatively async (it yields to the
+ * event loop), so the button is disabled and its label shows progress while
+ * running. Results computed from content that was invalidated mid-run (new
+ * file, clear, re-simplify) are discarded via the stateGeneration guard.
  */
 async function handleFlattenSVG(): Promise<void> {
   console.log('Flatten SVG handler - START');
@@ -365,27 +386,47 @@ async function handleFlattenSVG(): Promise<void> {
     alert('Please simplify the colors first');
     return;
   }
+  if (isFlattening) return;
+  isFlattening = true;
 
-  const flattened = await flattenSVGPure(
-    simplifyState.simplifiedSVGContent,
-    simplifyState.simplifiedColors
-  );
-  
-  if (!flattened) {
-    alert('Failed to flatten SVG');
-    return;
+  const generation = stateGeneration;
+  flattenBtn.disabled = true;
+  flattenBtn.textContent = 'Flattening…';
+
+  try {
+    const flattened = await flattenSVGPure(
+      simplifyState.simplifiedSVGContent,
+      simplifyState.simplifiedColors,
+      (status) => {
+        flattenBtn.textContent = `Flattening: ${status}…`;
+      }
+    );
+
+    if (generation !== stateGeneration) {
+      console.log('Flatten SVG handler - DISCARDED (state changed while flattening)');
+      return;
+    }
+
+    if (!flattened) {
+      alert('Failed to flatten SVG');
+      return;
+    }
+
+    flattenState.flattenedSVGContent = flattened;
+
+    svgDisplayFlattened.innerHTML = flattenState.flattenedSVGContent;
+
+    simplifyState.simplifiedSVGContent = flattenState.flattenedSVGContent;
+    svgDisplaySimplified.innerHTML = flattenState.flattenedSVGContent;
+
+    updateUIState();
+
+    console.log('Flatten SVG handler - COMPLETE');
+  } finally {
+    isFlattening = false;
+    flattenBtn.textContent = 'Flatten SVG';
+    updateUIState();
   }
-
-  flattenState.flattenedSVGContent = flattened;
-
-  svgDisplayFlattened.innerHTML = flattenState.flattenedSVGContent;
-  
-  simplifyState.simplifiedSVGContent = flattenState.flattenedSVGContent;
-  svgDisplaySimplified.innerHTML = flattenState.flattenedSVGContent;
-
-  updateUIState();
-  
-  console.log('Flatten SVG handler - COMPLETE');
 }
 
 /**
@@ -468,7 +509,7 @@ async function handleCreate3DStructure(): Promise<void> {
  * HANDLER: Export STL
  * Isolated: Reads structureState and exportState only
  */
-function handleExportSTL(): void {
+async function handleExportSTL(): Promise<void> {
   console.log('Export STL handler - START');
 
   if (!structureState.meshGroup) {
@@ -483,6 +524,31 @@ function handleExportSTL(): void {
 
   const fileName = '3d-poster';
 
+  // The manifold builder requires a FLATTENED SVG (no overlapping shapes).
+  // Overlapping regions produce coincident bottom faces at z=0 whose
+  // triangulations can share diagonal edges — an edge used by 4 triangles
+  // (2 from each region's bottom face) is non-manifold and slicers reject it.
+  // If the user skipped "Flatten SVG" (or flattened after creating the 3D
+  // structure, leaving structureState.svgContentFor3D stale), flatten now.
+  let svgForExport = structureState.svgContentFor3D;
+  const alreadyFlattened =
+    flattenState.flattenedSVGContent.length > 0 &&
+    structureState.svgContentFor3D === flattenState.flattenedSVGContent;
+  if (!alreadyFlattened) {
+    console.log('STL export: SVG not flattened, flattening for manifold export...');
+    if (stlInfoText) {
+      stlInfoText.textContent = 'Flattening SVG for manifold export…';
+    }
+    try {
+      svgForExport = await flattenSVG(
+        structureState.svgContentFor3D,
+        simplifyState.simplifiedColors
+      );
+    } catch (e) {
+      console.warn('STL export: auto-flatten failed, proceeding with unflattened SVG:', e);
+    }
+  }
+
   // Build a single water-tight (manifold) solid from the flattened SVG for
   // export. The display group uses separate per-shape meshes (so the z-buffer
   // keeps colors crisp), but those produce coincident internal walls that make
@@ -491,18 +557,22 @@ function handleExportSTL(): void {
   // edges) so the exported STL is printable. Falls back to the display group if
   // manifold construction fails, so export still works (just not water-tight).
   let exportSource: THREE.Object3D = structureState.meshGroup;
-  const manifoldGroup = createManifoldGroupForExport(
-    structureState.svgContentFor3D,
-    simplifyState.colorHeights,
-    structureState.scaleFactor,
-    structureState.boundingBox,
-    exportState.layerHeightMM
-  );
-  if (manifoldGroup) {
-    exportSource = manifoldGroup;
-    console.log('STL export: using manifold geometry');
-  } else {
-    console.warn('STL export: manifold build failed, falling back to display meshes (may not be water-tight)');
+  try {
+    const manifoldGroup = await createManifoldGroupForExport(
+      svgForExport,
+      simplifyState.colorHeights,
+      structureState.scaleFactor,
+      structureState.boundingBox,
+      exportState.layerHeightMM
+    );
+    if (manifoldGroup) {
+      exportSource = manifoldGroup;
+      console.log('STL export: using manifold geometry');
+    } else {
+      console.warn('STL export: manifold build failed, falling back to display meshes (may not be water-tight)');
+    }
+  } catch (error) {
+    console.error('Error building manifold geometry, falling back to display meshes:', error);
   }
 
   const scaledGroup = createScaledClone(

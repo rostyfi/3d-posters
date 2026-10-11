@@ -30,6 +30,107 @@ const DEFAULT_OPTIONS: STLExportOptions = {
 };
 
 /**
+ * Vertex welding tolerance in mm. Vertices closer than this are merged into
+ * one. 0.1 µm is ~16x the float32 ULP at 100 mm, so it still snaps together
+ * vertices that differ only by float32 rounding or boolean-op float noise,
+ * while staying below the intentional hairline gaps the manifold builder
+ * opens at point contacts (those gaps are ~1 µm at a 100 mm export — a 1 µm
+ * weld grid would close them and reintroduce non-manifold edges). Far below
+ * any 3D printer's resolution (typical layer height 0.1 mm = 100 µm), so the
+ * distortion is invisible.
+ */
+const WELD_TOLERANCE = 1e-4;
+
+/** Quantize a coordinate to the welding grid. */
+function weldCoord(v: number): number {
+  return Math.round(v / WELD_TOLERANCE);
+}
+
+/** Grid-cell key for a vertex position. */
+function weldKey(x: number, y: number, z: number): string {
+  return `${weldCoord(x)},${weldCoord(y)},${weldCoord(z)}`;
+}
+
+/**
+ * Repair a triangle soup so that slicers see a watertight mesh:
+ *
+ * 1. **Weld vertices** — quantize every vertex to a 1 µm grid so that
+ *    vertices which are mathematically identical but differ by float32
+ *    rounding (or by boolean-op float noise in the flatten step) collapse
+ *    to the exact same position. Without this, shared edges don't match
+ *    and the slicer reports them as non-manifold.
+ *
+ * 2. **Remove duplicate faces** — two triangles with the same three welded
+ *    vertices (same cyclic order) are coincident duplicates, typically from
+ *    residual region overlaps that survived the flatten step. Keeping both
+ *    makes every edge of the pair shared by 4 triangles (non-manifold).
+ *
+ * 3. **Remove degenerate faces** — triangles whose vertices collapse to
+ *    fewer than 3 distinct positions after welding carry no area and only
+ *    create zero-area faces that some slicers reject.
+ *
+ * Faces with the same three vertices but *opposite* winding (the two sides
+ * of a zero-thickness wall) are NOT duplicates and are kept.
+ */
+function repairFaces(faces: STLFace[]): STLFace[] {
+  // --- 1. Weld vertices ---
+  const weldMap = new Map<string, STLVertex>();
+  const welded: STLFace[] = [];
+  for (const face of faces) {
+    const verts = face.vertices.map((v) => {
+      const key = weldKey(v.x, v.y, v.z);
+      let canonical = weldMap.get(key);
+      if (!canonical) {
+        canonical = { x: v.x, y: v.y, z: v.z };
+        weldMap.set(key, canonical);
+      }
+      return canonical;
+    }) as [STLVertex, STLVertex, STLVertex];
+    welded.push({ normal: face.normal, vertices: verts });
+  }
+
+  // --- 2 & 3. Remove duplicate and degenerate faces ---
+  // Two faces are duplicates when they have the same 3 welded vertices in
+  // the same cyclic order (same winding). Opposite winding (the two sides
+  // of a zero-thickness wall) must both be kept.
+  const seen = new Set<string>();
+  const result: STLFace[] = [];
+
+  for (const face of welded) {
+    const k0 = weldKey(face.vertices[0].x, face.vertices[0].y, face.vertices[0].z);
+    const k1 = weldKey(face.vertices[1].x, face.vertices[1].y, face.vertices[1].z);
+    const k2 = weldKey(face.vertices[2].x, face.vertices[2].y, face.vertices[2].z);
+
+    // Degenerate: two or more vertices collapsed to the same grid cell.
+    if (k0 === k1 || k1 === k2 || k0 === k2) continue;
+
+    // Canonical key: rotate so the lexicographically smallest key is first.
+    // This treats (A,B,C), (B,C,A), (C,A,B) as the same face (same winding)
+    // and (A,C,B), (C,B,A), (B,A,C) as the opposite winding (different face).
+    const keys = [k0, k1, k2];
+    let minIdx = 0;
+    for (let i = 1; i < 3; i++) if (keys[i] < keys[minIdx]) minIdx = i;
+    const canonical = [keys[minIdx], keys[(minIdx + 1) % 3], keys[(minIdx + 2) % 3]];
+    const faceKey = canonical.join('|');
+
+    if (seen.has(faceKey)) continue;
+    seen.add(faceKey);
+    result.push(face);
+  }
+
+  const removed = faces.length - result.length;
+  if (removed > 0) {
+    console.log(
+      `Mesh repair: welded vertices (${weldMap.size} unique), ` +
+      `removed ${removed} duplicate/degenerate faces ` +
+      `(${faces.length} -> ${result.length})`
+    );
+  }
+
+  return result;
+}
+
+/**
  * Vertex data for STL face
  */
 interface STLVertex {
@@ -315,10 +416,19 @@ function writeUint16(array: Uint8Array, offset: number, value: number): void {
  */
 export function exportToSTLBlob(object: THREE.Object3D, options: Partial<STLExportOptions> = {}): Blob {
   const mergedOptions: STLExportOptions = { ...DEFAULT_OPTIONS, ...options };
-  const faces = objectToSTLFaces(object);
+  const rawFaces = objectToSTLFaces(object);
+
+  if (rawFaces.length === 0) {
+    throw new Error('No faces found in the 3D object for STL export');
+  }
+
+  // Repair: weld vertices + remove duplicate/degenerate faces so the STL
+  // is watertight (manifold). Without this, float32 rounding and residual
+  // overlaps create non-manifold edges that slicers reject.
+  const faces = repairFaces(rawFaces);
 
   if (faces.length === 0) {
-    throw new Error('No faces found in the 3D object for STL export');
+    throw new Error('No faces left after mesh repair');
   }
 
   console.log(`Exporting ${faces.length} faces as STL`);
@@ -474,7 +584,35 @@ export function createScaledClone(
       // Apply the mesh's world matrix to its geometry
       // This bakes in all transforms (position, rotation, scale) from the entire hierarchy
       mesh.geometry.applyMatrix4(mesh.matrixWorld);
-      
+
+      // The Y-flip (SVG Y-down -> STL Y-up) is a mirror transform, so the
+      // baked world matrix has a negative determinant and every triangle's
+      // winding is inverted: normals would face inward and slicers would
+      // reject the mesh. Reverse the winding (swap the second and third
+      // vertex of each triangle) so the exported solid faces outward.
+      if (mesh.matrixWorld.determinant() < 0) {
+        const geometry = mesh.geometry;
+        const index = geometry.index;
+        if (index) {
+          for (let i = 0; i < index.count; i += 3) {
+            const tmp = index.getX(i + 1);
+            index.setX(i + 1, index.getX(i + 2));
+            index.setX(i + 2, tmp);
+          }
+        } else {
+          const arr = geometry.getAttribute('position').array as number[];
+          for (let i = 0; i < arr.length; i += 9) {
+            for (let c = 0; c < 3; c++) {
+              const a = i + 3 + c;
+              const b = i + 6 + c;
+              const tmp = arr[a];
+              arr[a] = arr[b];
+              arr[b] = tmp;
+            }
+          }
+        }
+      }
+
       // Transform normals using the normal matrix (upper 3x3 of matrixWorld, inverted and transposed)
       // For now, recompute normals to ensure they're correct after transformation
       mesh.geometry.computeVertexNormals();
