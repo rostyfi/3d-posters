@@ -143,3 +143,32 @@ edge map → no walls → the gap is covered by top + bottom faces → manifold.
   `src/main.ts` unless strictly necessary (they are not, for this idea).
 - Report back: what you changed (files/functions), the test outputs (key
   lines), and the poster gate result.
+
+## Result (controller)
+
+Subagent `wt-idea-01` implemented this idea as an uncommitted working-tree
+change: `fillMicroHoles` in `src/3d/svg-to-3d.ts` (+149 lines, purely
+additive), wired into `createManifoldGroupForExport` between
+`removeRegionOverlaps` and `buildManifoldGeometry`. The subagent was stopped
+before reporting; the controller ran the remaining checks:
+
+- `npm run typecheck`: **PASS**.
+- Gate `./run-pipeline.sh "export-2026-08-06 232814.svg"`: **FAIL**.
+  `fillMicroHoles: filled=36 micro-hole(s) (scanned 42 boundary loop(s))`,
+  but the builder then reported `18 non-manifold edges detected` and the STL
+  has **12 non-manifold edges** (histogram `{2: 90594, 3: 12}`, 12
+  mis-oriented), 60408 triangles, volume 1379.81 mm³ (correct), Euler
+  V−E+F = 6.
+
+The fill removed the original double wall (was: 2 edges shared by 4
+triangles) but introduced count-3 edges: the fill regions' boundaries do
+not pair cleanly with their neighbors everywhere — likely loop-tracing at
+pinch vertices, T-junction mismatches between the fill ring and the
+neighbors' rings, or fill/neighbor overlaps (the builder's diagnostic blames
+overlapping input regions). Next iteration should inspect the 12 bad edges
+(5 distinct XY locations, at z=0 and z=0.2) and the corresponding fill
+regions.
+
+Status: loop paused — the controller teleported into remote execution. The
+fix is uncommitted in the working tree; the pre-fix state is on remote
+`master` (commit `b048cf4`).

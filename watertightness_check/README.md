@@ -23,10 +23,15 @@ Goal: make the SVG → STL pipeline produce a **watertight** STL for
 
 | Idea | File | Status | Gate result |
 |------|------|--------|-------------|
-| 01 | idea-01-fill-micro-holes.md | pending | — |
+| 01 | idea-01-fill-micro-holes.md | executed (subagent stopped before reporting; fix left uncommitted in the working tree) | FAIL — 12 non-manifold edges (was 2) |
 | 02 | idea-02-builder-vertex-weld.md | pending | — |
 | 03 | idea-03-weld-tolerance-reduction.md | pending | — |
 | 04 | idea-04-tolerant-edge-pairing.md | pending | — |
+
+Loop paused 2026-10-11: the controller teleported into remote execution and
+the idea-01 subagent was stopped. Original instruction preserved in
+`exploration_loop.md`. Pre-fix state committed and force-pushed to remote
+`master` (`b048cf4`).
 
 ## Context
 

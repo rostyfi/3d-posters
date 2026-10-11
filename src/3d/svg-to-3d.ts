@@ -1622,6 +1622,154 @@ export async function removeRegionOverlaps(regions: Region[]): Promise<void> {
 }
 
 /**
+ * Fill micro-holes narrower than the STL weld grid (in place).
+ *
+ * The flatten's regions tile the plane except for hairline gaps left by the
+ * 3-decimal rounding of the emitted path data (removeRegionOverlaps fixes
+ * overlaps, not gaps). A gap's boundary edges are unpaired in the builder's
+ * edge map, so each neighboring region extrudes a wall along its edge — but
+ * when the gap is narrower than the STL weld grid (WELD_TOLERANCE in
+ * stl-export.ts), the export vertex weld merges the two opposing walls into
+ * one and their top/bottom edges become shared by four triangles: a
+ * non-manifold double wall.
+ *
+ * This pass finds uncovered gaps — closed loops of wall-emitting edges —
+ * whose width is below the weld grid and adds a fill region covering each
+ * one. The fill region's edges are the exact same vertices as the neighbors'
+ * edges, so they pair exactly in the builder's edge map: no walls, no double
+ * walls, the gap is covered by top and bottom faces. The fill inherits the
+ * color (hence the height) of a region that contributed an edge to the loop,
+ * so no new palette color is introduced. Gaps wider than the weld grid are
+ * legitimate slits / artwork holes — their walls do not weld and they are
+ * manifold — and are left alone; the outer canvas boundary is huge and never
+ * filled.
+ *
+ * @param regions - Flattened regions (modified in place).
+ * @returns The number of micro-holes filled.
+ */
+function fillMicroHoles(regions: Region[]): number {
+  // Directed ring edges, one per face edge of every region (the same walk
+  // segmentsOf uses), remembering the owning region index per edge.
+  interface DEdge {
+    ax: number; ay: number; bx: number; by: number;
+    ka: string; kb: string; k: string; ri: number;
+  }
+  const directed: DEdge[] = [];
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (let ri = 0; ri < regions.length; ri++) {
+    const poly = regions[ri].polygon;
+    if (poly.isEmpty()) continue;
+    for (const f of poly.faces) {
+      const vs = f.vertices;
+      const n = vs.length;
+      for (let i = 0; i < n; i++) {
+        const u = vs[i], v = vs[(i + 1) % n];
+        if (Math.abs(u.x - v.x) < 1e-9 && Math.abs(u.y - v.y) < 1e-9) continue;
+        if (u.x < minX) minX = u.x;
+        if (u.x > maxX) maxX = u.x;
+        if (u.y < minY) minY = u.y;
+        if (u.y > maxY) maxY = u.y;
+        const ka = vertKey(u), kb = vertKey(v);
+        directed.push({
+          ax: u.x, ay: u.y, bx: v.x, by: v.y, ka, kb,
+          k: ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`,
+          ri,
+        });
+      }
+    }
+  }
+
+  // Undirected edge map (MANIFOLD_Q snapped, direction-insensitive — the same
+  // key the builder uses). Wall-emitting edges are the keys with exactly one
+  // directed edge: the builder walls an edge exactly when no entry from a
+  // different region uses it (a key used twice by the same region, e.g. an
+  // earcut bridge, is paired and emits no wall — excluded by the same count).
+  const edgeCount = new Map<string, number>();
+  for (const e of directed) edgeCount.set(e.k, (edgeCount.get(e.k) || 0) + 1);
+  const wallEdges: DEdge[] = [];
+  for (const e of directed) if (edgeCount.get(e.k) === 1) wallEdges.push(e);
+
+  // Trace closed loops over the directed wall-emitting edges: chain by
+  // snapped endpoint key (the edge a->b continues with an unused edge
+  // starting at b) until the loop closes. Each loop is one boundary
+  // component: the outer canvas boundary, or a hole.
+  const outgoing = new Map<string, number[]>();
+  for (let i = 0; i < wallEdges.length; i++) {
+    const e = wallEdges[i];
+    let arr = outgoing.get(e.ka);
+    if (!arr) { arr = []; outgoing.set(e.ka, arr); }
+    arr.push(i);
+  }
+  const used = new Array<boolean>(wallEdges.length).fill(false);
+  // Width limit: the STL weld grid (1e-4 mm) in view units at the default
+  // 100 mm export is extent * 1e-6; the factor 2 is a safety margin for weld
+  // cells straddling the gap.
+  const extent = Math.max(maxX - minX, maxY - minY);
+  const widthLimit = 2 * extent * 1e-6;
+  let filled = 0, scanned = 0;
+  for (let i = 0; i < wallEdges.length; i++) {
+    if (used[i]) continue;
+    const chain = [i];
+    used[i] = true;
+    const startKey = wallEdges[i].ka;
+    let cur = wallEdges[i].kb;
+    while (cur !== startKey) {
+      const cands = outgoing.get(cur);
+      let next = -1;
+      if (cands) {
+        for (const ci of cands) {
+          if (!used[ci]) { next = ci; break; }
+        }
+      }
+      if (next < 0) break; // dead end: not a closed boundary loop
+      used[next] = true;
+      chain.push(next);
+      cur = wallEdges[next].kb;
+    }
+    if (cur !== startKey) continue;
+    scanned++;
+    // Loop points: the start vertex of each edge in the chain (the last edge
+    // closes back onto the first). Dedupe consecutive points that snapped
+    // to the same key.
+    const pts: { x: number; y: number }[] = [];
+    for (const ci of chain) {
+      const p = { x: wallEdges[ci].ax, y: wallEdges[ci].ay };
+      const last = pts[pts.length - 1];
+      if (last && vertKey(last) === vertKey(p)) continue;
+      pts.push(p);
+    }
+    if (pts.length >= 2 && vertKey(pts[0]) === vertKey(pts[pts.length - 1])) pts.pop();
+    if (pts.length < 3) continue;
+    // Measure the loop: shoelace area (signed), perimeter, and the width
+    // proxy w = 2 * area / perimeter (the short dimension of a thin slit,
+    // the radius of a round hole).
+    let shoelace = 0, perimeter = 0;
+    for (let j = 0; j < pts.length; j++) {
+      const a = pts[j], b = pts[(j + 1) % pts.length];
+      shoelace += a.x * b.y - b.x * a.y;
+      perimeter += Math.hypot(b.x - a.x, b.y - a.y);
+    }
+    if (perimeter < 1e-18) continue;
+    const area = Math.abs(shoelace) / 2;
+    const w = 2 * area / perimeter;
+    if (!(w < widthLimit)) continue; // too wide: a legitimate slit / hole
+    // Fill: a region covering the loop, colored like a region that
+    // contributed an edge to it (the fill inherits that region's height).
+    // A negative shoelace winds the loop the wrong way for a solid face —
+    // reverse it.
+    const color = regions[wallEdges[chain[0]].ri].color;
+    const fillPts = shoelace < 0 ? [...pts].reverse() : pts;
+    const polygon = new Polygon();
+    try { polygon.addFace(fillPts.map((p) => point(p.x, p.y))); } catch { continue; }
+    if (polygon.isEmpty() || polygon.area() <= 0) continue;
+    regions.push({ color, polygon });
+    filled++;
+  }
+  console.log(`fillMicroHoles: filled=${filled} micro-hole(s) (scanned ${scanned} boundary loop(s))`);
+  return filled;
+}
+
+/**
  * Build a manifold export group from the flattened SVG.
  *
  * Produces a single-mesh group whose transform mirrors `create3DMeshesFromPaths`
@@ -1642,6 +1790,7 @@ export async function createManifoldGroupForExport(
   const regions = await svgToRegions(svgContent);
   if (!regions || regions.length === 0) return null;
   await removeRegionOverlaps(regions);
+  fillMicroHoles(regions);
   const geometry = buildManifoldGeometry(regions, colorHeights, layerHeightMM);
   if (!geometry) return null;
 
