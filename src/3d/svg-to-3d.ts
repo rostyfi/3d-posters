@@ -1622,7 +1622,7 @@ export async function removeRegionOverlaps(regions: Region[]): Promise<void> {
 }
 
 /**
- * Fill micro-holes narrower than the STL weld grid (in place).
+ * Merge micro-holes into an adjacent region by ring surgery (in place).
  *
  * The flatten's regions tile the plane except for hairline gaps left by the
  * 3-decimal rounding of the emitted path data (removeRegionOverlaps fixes
@@ -1631,39 +1631,59 @@ export async function removeRegionOverlaps(regions: Region[]): Promise<void> {
  * when the gap is narrower than the STL weld grid (WELD_TOLERANCE in
  * stl-export.ts), the export vertex weld merges the two opposing walls into
  * one and their top/bottom edges become shared by four triangles: a
- * non-manifold double wall.
+ * non-manifold double wall. Filling the gap with a new region does not help:
+ * the fill is itself a sub-weld-grid sliver, and the weld collapses its
+ * faces into coincident opposite-winding pairs.
  *
- * This pass finds uncovered gaps — closed loops of wall-emitting edges —
- * whose width is below the weld grid and adds a fill region covering each
- * one. The fill region's edges are the exact same vertices as the neighbors'
- * edges, so they pair exactly in the builder's edge map: no walls, no double
- * walls, the gap is covered by top and bottom faces. The fill inherits the
- * color (hence the height) of a region that contributed an edge to the loop,
- * so no new palette color is introduced. Gaps wider than the weld grid are
- * legitimate slits / artwork holes — their walls do not weld and they are
- * manifold — and are left alone; the outer canvas boundary is huge and never
- * filled.
+ * Instead, each micro-hole is absorbed into an adjacent region: the host
+ * region's ring detours around the hole, so the hole's area becomes part of
+ * the host — no new region, no sliver. The detour reuses the hole's other
+ * boundary edges verbatim (exact vertices), so they pair exactly with their
+ * regions in the builder's edge map: no walls, no double walls. The host's
+ * old edge becomes interior and disappears. Gaps wider than the weld grid
+ * are legitimate slits / artwork holes — their walls do not weld and they
+ * are manifold — and are left alone; the outer canvas boundary is huge and
+ * never merged. A traced hole walk that revisits a vertex (a figure-eight:
+ * two tiny holes sharing a vertex) is decomposed into simple cycles first,
+ * and each simple cycle is measured and merged independently — merging the
+ * whole walk would splice a self-touching ring and fail validation.
+ * A degenerate zero-area cycle — the host's single chain edge and the
+ * complement path lying on one line (a collinear slit) — cannot be
+ * detoured (the detour would retrace the line and self-touch); it is
+ * closed by an insertion-splice instead: the complement edge spanning a
+ * chain endpoint is split at that endpoint in its owner's ring, so the
+ * owner's new edge pairs with the host's chain. Splices are applied one at
+ * a time and a splice that breaks its face's ring drops only itself, and
+ * pinched rings (a vertex visited twice) are accepted because the builder
+ * splits them into simple lobes and opens the point contact.
  *
  * @param regions - Flattened regions (modified in place).
- * @returns The number of micro-holes filled.
+ * @returns The number of micro-holes merged.
  */
-function fillMicroHoles(regions: Region[]): number {
+function mergeMicroHoles(regions: Region[]): number {
   // Directed ring edges, one per face edge of every region (the same walk
-  // segmentsOf uses), remembering the owning region index per edge.
+  // segmentsOf uses), remembering the owning region, face, and edge index
+  // per edge — the splice needs the exact position of the host's ring edge.
   interface DEdge {
     ax: number; ay: number; bx: number; by: number;
-    ka: string; kb: string; k: string; ri: number;
+    ka: string; kb: string; k: string; ri: number; fi: number; ei: number;
   }
+  // A ring surgery on one host face: at ring edge a, insert the detour's
+  // interior vertices after ring[a], then advance skip edges past a
+  // (dropping the chain's interior ring vertices) and continue at the edge
+  // that starts at the chain's end.
+  interface Splice { insert: V2[]; skip: number; }
   const directed: DEdge[] = [];
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (let ri = 0; ri < regions.length; ri++) {
     const poly = regions[ri].polygon;
     if (poly.isEmpty()) continue;
-    for (const f of poly.faces) {
-      const vs = f.vertices;
+    const faces = [...poly.faces];
+    for (let fi = 0; fi < faces.length; fi++) {
+      const vs = faces[fi].vertices;
       const n = vs.length;
-      for (let i = 0; i < n; i++) {
-        const u = vs[i], v = vs[(i + 1) % n];
+      for (let ei = 0; ei < n; ei++) {
+        const u = vs[ei], v = vs[(ei + 1) % n];
         if (Math.abs(u.x - v.x) < 1e-9 && Math.abs(u.y - v.y) < 1e-9) continue;
         if (u.x < minX) minX = u.x;
         if (u.x > maxX) maxX = u.x;
@@ -1673,7 +1693,7 @@ function fillMicroHoles(regions: Region[]): number {
         directed.push({
           ax: u.x, ay: u.y, bx: v.x, by: v.y, ka, kb,
           k: ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`,
-          ri,
+          ri, fi, ei,
         });
       }
     }
@@ -1689,10 +1709,11 @@ function fillMicroHoles(regions: Region[]): number {
   const wallEdges: DEdge[] = [];
   for (const e of directed) if (edgeCount.get(e.k) === 1) wallEdges.push(e);
 
-  // Trace closed loops over the directed wall-emitting edges: chain by
+  // Trace closed walks over the directed wall-emitting edges: chain by
   // snapped endpoint key (the edge a->b continues with an unused edge
-  // starting at b) until the loop closes. Each loop is one boundary
-  // component: the outer canvas boundary, or a hole.
+  // starting at b) until the walk closes. Each closed walk is a boundary
+  // component: the outer canvas boundary, or a hole — or several holes
+  // sharing vertices (a figure-eight), split into simple cycles below.
   const outgoing = new Map<string, number[]>();
   for (let i = 0; i < wallEdges.length; i++) {
     const e = wallEdges[i];
@@ -1706,67 +1727,354 @@ function fillMicroHoles(regions: Region[]): number {
   // cells straddling the gap.
   const extent = Math.max(maxX - minX, maxY - minY);
   const widthLimit = 2 * extent * 1e-6;
-  let filled = 0, scanned = 0;
+  // Splices to apply, grouped per host region and face: face index -> ring
+  // edge index -> splice. Loops are edge-disjoint, so each (face, edge) pair
+  // gets at most one splice; several loops can share a host face and are
+  // applied together.
+  const splices = new Map<number, Map<number, Map<number, Splice>>>();
+  const splicedLoops = new Map<number, number>();
+  let scanned = 0;
+  let simpleCycles = 0;
+  // Decompose a closed walk into simple cycles by splitting at repeated
+  // vertices (snapped keys): if vertex v_j == v_l (j < l), the walk splits
+  // into the closed walks edges[j..l-1] (v_j to v_l) and edges[l..] +
+  // edges[..j-1] (v_l around to v_j). Recurse until no walk repeats a
+  // vertex. A micro-hole whose boundary is a figure-eight — two tiny holes
+  // sharing a vertex — traces as ONE closed walk, but merging the whole
+  // walk would splice a self-touching ring (the shared vertex twice) and
+  // fail validation; its lobes are separate hole loops and must be merged
+  // independently.
+  const decomposeWalk = (walk: number[]): number[][] => {
+    const seen = new Map<string, number>();
+    for (let j = 0; j < walk.length; j++) {
+      const k = wallEdges[walk[j]].ka;
+      const prev = seen.get(k);
+      if (prev !== undefined) {
+        const a = walk.slice(prev, j);
+        const b = walk.slice(j).concat(walk.slice(0, prev));
+        return [...decomposeWalk(a), ...decomposeWalk(b)];
+      }
+      seen.set(k, j);
+    }
+    return [walk];
+  };
   for (let i = 0; i < wallEdges.length; i++) {
     if (used[i]) continue;
     const chain = [i];
     used[i] = true;
     const startKey = wallEdges[i].ka;
+    const startX = wallEdges[i].ax, startY = wallEdges[i].ay;
     let cur = wallEdges[i].kb;
-    while (cur !== startKey) {
-      const cands = outgoing.get(cur);
+    let curX = wallEdges[i].bx, curY = wallEdges[i].by;
+    let closed = cur === startKey;
+    while (!closed) {
       let next = -1;
+      const cands = outgoing.get(cur);
       if (cands) {
         for (const ci of cands) {
           if (!used[ci]) { next = ci; break; }
         }
       }
-      if (next < 0) break; // dead end: not a closed boundary loop
+      if (next < 0) {
+        // No unused edge at the exact snapped key: consecutive boundary
+        // edges can meet at near-coincident vertices (~1e-4 apart) that
+        // snap to different cells. Fall back to the unused outgoing edge
+        // whose start is nearest to the current end, within the 3-decimal
+        // rounding quantum plus margin.
+        let best = 2e-3;
+        for (let ci = 0; ci < wallEdges.length; ci++) {
+          if (used[ci]) continue;
+          const d = Math.hypot(wallEdges[ci].ax - curX, wallEdges[ci].ay - curY);
+          if (d <= best) { best = d; next = ci; }
+        }
+      }
+      if (next < 0) {
+        // Dead end. If the current end sits at the start vertex (snapped
+        // to a different cell), the walk is still closed.
+        closed = Math.hypot(curX - startX, curY - startY) <= 2e-3;
+        break;
+      }
       used[next] = true;
       chain.push(next);
       cur = wallEdges[next].kb;
+      curX = wallEdges[next].bx;
+      curY = wallEdges[next].by;
+      closed = cur === startKey;
     }
-    if (cur !== startKey) continue;
+    if (!closed) continue;
     scanned++;
-    // Loop points: the start vertex of each edge in the chain (the last edge
-    // closes back onto the first). Dedupe consecutive points that snapped
-    // to the same key.
-    const pts: { x: number; y: number }[] = [];
-    for (const ci of chain) {
-      const p = { x: wallEdges[ci].ax, y: wallEdges[ci].ay };
-      const last = pts[pts.length - 1];
-      if (last && vertKey(last) === vertKey(p)) continue;
-      pts.push(p);
+    for (const cycle of decomposeWalk(chain)) {
+      simpleCycles++;
+      // Loop points: walk the cycle's edges in order, maintaining the
+      // previous end point. For each edge, if its start snapped-differs
+      // from the previous end, push the previous end first (a
+      // proximity-gap vertex — consecutive boundary edges can meet at
+      // near-coincident vertices that snap to different cells), then push
+      // the edge's start; at the end push the last edge's end if it
+      // snapped-differs from the first vertex. Dedupe consecutive points
+      // that snapped to the same key; drop the closing duplicate. For
+      // exact-match cycles this equals the start vertices of the cycle's
+      // edges; the gap vertices also make 2-edge slit cycles (two
+      // near-coincident edges, endpoints snapped-different) measurable.
+      const pts: { x: number; y: number }[] = [];
+      const pushPt = (p: { x: number; y: number }) => {
+        const last = pts[pts.length - 1];
+        if (last && vertKey(last) === vertKey(p)) return;
+        pts.push(p);
+      };
+      let prevEnd: { x: number; y: number } | null = null;
+      for (const ci of cycle) {
+        const e = wallEdges[ci];
+        const p = { x: e.ax, y: e.ay };
+        if (prevEnd && vertKey(prevEnd) !== vertKey(p)) pushPt(prevEnd);
+        pushPt(p);
+        prevEnd = { x: e.bx, y: e.by };
+      }
+      if (prevEnd && vertKey(prevEnd) !== vertKey(pts[0])) pushPt(prevEnd);
+      if (pts.length >= 2 && vertKey(pts[0]) === vertKey(pts[pts.length - 1])) pts.pop();
+      if (pts.length < 3) continue;
+      // Measure the loop: shoelace area (signed), perimeter, and the width
+      // proxy w = 2 * area / perimeter (the short dimension of a thin slit,
+      // the radius of a round hole).
+      let shoelace = 0, perimeter = 0;
+      for (let j = 0; j < pts.length; j++) {
+        const a = pts[j], b = pts[(j + 1) % pts.length];
+        shoelace += a.x * b.y - b.x * a.y;
+        perimeter += Math.hypot(b.x - a.x, b.y - a.y);
+      }
+      if (perimeter < 1e-18) continue;
+      const area = Math.abs(shoelace) / 2;
+      const w = 2 * area / perimeter;
+      if (!(w < widthLimit)) continue; // too wide: a legitimate slit / hole
+      // Host: among the cycle's edges whose previous cycle edge
+      // (circularly) belongs to a different region — the first edge of a
+      // maximal run, where the splice anchors at the chain's first ring
+      // edge — pick the largest-area region (any contributor works; the
+      // largest is most robust). If every edge belongs to one region (a
+      // self-hole), skip the cycle.
+      const m = cycle.length;
+      let hostAt = -1, hostArea = -1;
+      for (let ci = 0; ci < m; ci++) {
+        const prev = wallEdges[cycle[(ci - 1 + m) % m]];
+        const e = wallEdges[cycle[ci]];
+        if (prev.ri === e.ri) continue;
+        const a = regions[e.ri].polygon.area();
+        if (a > hostArea) { hostArea = a; hostAt = ci; }
+      }
+      if (hostAt < 0) continue; // single-region cycle: a self-hole
+      const host = wallEdges[cycle[hostAt]];
+      // Chain: from the host edge, extend forward (circularly) while the
+      // next cycle edge has the host's region — the host's maximal run in
+      // the cycle, a consecutive path v_j -> ... -> v_{j+k} of k ring
+      // edges (k-1 interior ring vertices).
+      let k = 1;
+      while (k < m && wallEdges[cycle[(hostAt + k) % m]].ri === host.ri) k++;
+      // Guard: the detour reuses the complement's edges verbatim (reversed).
+      // If the host has a second run inside the same cycle, the complement
+      // contains the host's own edges and the detour would retrace them —
+      // coincident doubled edges in the rebuilt ring. Skip such cycles.
+      let compHasHost = false;
+      for (let ci = 0; ci < m; ci++) {
+        if (ci >= hostAt && ci < hostAt + k) continue; // the chain itself
+        if (wallEdges[cycle[ci]].ri === host.ri) { compHasHost = true; break; }
+      }
+      if (compHasHost) continue;
+      // Degenerate collinear cycle (m === 3, k === 1): the chain is a
+      // single edge J -> K and the complement K -> X -> J lies on the SAME
+      // line — a zero-area spike whose middle vertex X is a 180° reversal
+      // running out past the chain's start and back. The detour-splice
+      // would retrace the line and leave a zero-width spike whose far edge
+      // passes through the junction vertex — a self-touching ring the probe
+      // rejects. When a chain endpoint lies strictly inside a complement
+      // edge, the whole cycle is collinear; close it with an
+      // insertion-splice instead: split the spanning complement edge in its
+      // owner's ring at the endpoint. The owner's ring gains the edge
+      // K -> J (or X -> K + K -> J), which pairs exactly with the host's
+      // chain J -> K, and the remaining new edge pairs with the
+      // complement's other edge — no walls, no degenerate detour, and the
+      // host's ring is never touched. The insertion typically makes the
+      // owner's ring visit the endpoint twice (a pinch); the builder's
+      // splitRingAtRepeats drops the degenerate spike lobe and keeps the
+      // main ring whose closing edge is K -> J.
+      const onSegStrict = (p: V2, a: V2, b: V2): boolean => {
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len2 = dx * dx + dy * dy;
+        if (len2 < 1e-18) return false;
+        const px = p.x - a.x, py = p.y - a.y;
+        if (Math.abs(dx * py - dy * px) > 1e-6 * Math.sqrt(len2)) return false;
+        const t = (dx * px + dy * py) / len2;
+        return t > 1e-12 && t < 1 - 1e-12;
+      };
+      if (m === 3 && k === 1) {
+        const chainE = wallEdges[cycle[hostAt]];
+        const comp1 = wallEdges[cycle[(hostAt + 1) % m]];
+        const comp2 = wallEdges[cycle[(hostAt + 2) % m]];
+        const J = { x: chainE.ax, y: chainE.ay };
+        const K = { x: chainE.bx, y: chainE.by };
+        let target: { e: DEdge; pt: V2 } | null = null;
+        if (onSegStrict(J, { x: comp1.ax, y: comp1.ay }, { x: comp1.bx, y: comp1.by })) {
+          target = { e: comp1, pt: J };
+        } else if (onSegStrict(K, { x: comp2.ax, y: comp2.ay }, { x: comp2.bx, y: comp2.by })) {
+          target = { e: comp2, pt: K };
+        }
+        if (target) {
+          let byFace = splices.get(target.e.ri);
+          if (!byFace) { byFace = new Map(); splices.set(target.e.ri, byFace); }
+          let byEdge = byFace.get(target.e.fi);
+          if (!byEdge) { byEdge = new Map(); byFace.set(target.e.fi, byEdge); }
+          byEdge.set(target.e.ei, { insert: [target.pt], skip: 0 });
+          splicedLoops.set(target.e.ri, (splicedLoops.get(target.e.ri) || 0) + 1);
+          continue; // this cycle is handled by the insertion-splice
+        }
+      }
+      // Splice: replace the host's whole chain with the reversed remaining
+      // loop path v_j -> v_{j-1} -> ... -> v_{j+k+1} -> v_{j+k}. The hole
+      // lies on the opposite side of the chain from the host's interior,
+      // so the reversed detour bulges into the hole and the host's ring
+      // then encloses the host plus the hole. The detour's interior
+      // vertices are the start vertices of the remaining cycle edges
+      // (e_{j-1}, e_{j-2}, ..., e_{j+k}) in that order, taken from the full
+      // loop points (which include gap vertices): each remaining edge is
+      // traversed verbatim in reverse, so it pairs exactly with its region
+      // in the builder's edge map, while the chain's edges become interior
+      // and disappear. The chain's interior ring vertices (v_{j+1} ..
+      // v_{j+k-1}) are deleted, not re-inserted — the detour never revisits
+      // them, so the rebuilt ring stays simple.
+      const insert: V2[] = [];
+      for (let t = 1; t <= m - k; t++) {
+        const e = wallEdges[cycle[(hostAt - t + m) % m]];
+        const nx = wallEdges[cycle[(hostAt - t + 1 + m) % m]];
+        // Proximity-gap vertex: e's end, when it snapped-differs from the
+        // next cycle edge's start (the detour crosses the gap verbatim).
+        if (vertKey({ x: e.bx, y: e.by }) !== vertKey({ x: nx.ax, y: nx.ay })) {
+          insert.push({ x: e.bx, y: e.by });
+        }
+        insert.push({ x: e.ax, y: e.ay });
+      }
+      let byFace = splices.get(host.ri);
+      if (!byFace) { byFace = new Map(); splices.set(host.ri, byFace); }
+      let byEdge = byFace.get(host.fi);
+      if (!byEdge) { byEdge = new Map(); byFace.set(host.fi, byEdge); }
+      byEdge.set(host.ei, { insert, skip: k - 1 });
+      splicedLoops.set(host.ri, (splicedLoops.get(host.ri) || 0) + 1);
     }
-    if (pts.length >= 2 && vertKey(pts[0]) === vertKey(pts[pts.length - 1])) pts.pop();
-    if (pts.length < 3) continue;
-    // Measure the loop: shoelace area (signed), perimeter, and the width
-    // proxy w = 2 * area / perimeter (the short dimension of a thin slit,
-    // the radius of a round hole).
-    let shoelace = 0, perimeter = 0;
-    for (let j = 0; j < pts.length; j++) {
-      const a = pts[j], b = pts[(j + 1) % pts.length];
-      shoelace += a.x * b.y - b.x * a.y;
-      perimeter += Math.hypot(b.x - a.x, b.y - a.y);
-    }
-    if (perimeter < 1e-18) continue;
-    const area = Math.abs(shoelace) / 2;
-    const w = 2 * area / perimeter;
-    if (!(w < widthLimit)) continue; // too wide: a legitimate slit / hole
-    // Fill: a region covering the loop, colored like a region that
-    // contributed an edge to it (the fill inherits that region's height).
-    // A negative shoelace winds the loop the wrong way for a solid face —
-    // reverse it.
-    const color = regions[wallEdges[chain[0]].ri].color;
-    const fillPts = shoelace < 0 ? [...pts].reverse() : pts;
-    const polygon = new Polygon();
-    try { polygon.addFace(fillPts.map((p) => point(p.x, p.y))); } catch { continue; }
-    if (polygon.isEmpty() || polygon.area() <= 0) continue;
-    regions.push({ color, polygon });
-    filled++;
   }
-  console.log(`fillMicroHoles: filled=${filled} micro-hole(s) (scanned ${scanned} boundary loop(s))`);
-  return filled;
+
+  // A rebuilt ring is acceptable when it has positive area and every lobe —
+  // the ring split at repeated snapped vertices, the builder's own
+  // splitRingAtRepeats — is a simple ring. The probe is deliberately more
+  // tolerant than Polygon.isValid: a pinched ring (a vertex visited twice,
+  // e.g. two splices meeting at a shared corner vertex, or an
+  // insertion-splice's endpoint) is fine — the builder cuts it into simple
+  // lobes (splitSelfTouchingIslands) and opens the point contact
+  // (resolvePointContacts). Proper edge crossings, collinear overlaps and
+  // vertex-on-edge touches still fail: the lobe containing them stays
+  // non-simple, and the builder cannot handle those.
+  const ringAcceptable = (ring: V2[]): boolean => {
+    const probe = new Polygon();
+    try {
+      probe.addFace(ring.map((p) => point(p.x, p.y)));
+    } catch { return false; }
+    if (probe.isEmpty() || probe.area() <= 0) return false;
+    for (const lobe of splitRingAtRepeats(ring)) {
+      const lp = new Polygon();
+      try {
+        lp.addFace(lobe.map((p) => point(p.x, p.y)));
+      } catch { return false; }
+      if (lp.isEmpty() || !lp.isValid()) return false;
+    }
+    return true;
+  };
+  // Apply a face's splices in one circular walk over the original ring:
+  // emit each edge's start vertex, then the insert vertices of the splice
+  // on that edge, and advance skip edges past it (dropping the chain's
+  // interior ring vertices). A chain may wrap the ring's index boundary,
+  // so start at an edge no splice skips over. Dedupe consecutive vertices
+  // that snapped to the same key.
+  const rebuildRing = (orig: V2[], byEdge: Map<number, Splice>): V2[] => {
+    const n = orig.length;
+    const covered = new Array<boolean>(n).fill(false);
+    for (const [a, sp] of byEdge) {
+      for (let t = 1; t <= sp.skip; t++) covered[(a + t) % n] = true;
+    }
+    let start = 0;
+    while (start < n && covered[start]) start++;
+    const raw: V2[] = [];
+    if (start < n) {
+      let ei = start, advanced = 0;
+      while (advanced < n) {
+        raw.push(orig[ei]);
+        const sp = byEdge.get(ei);
+        if (sp) for (const p of sp.insert) raw.push(p);
+        const step = sp ? 1 + sp.skip : 1;
+        ei = (ei + step) % n;
+        advanced += step;
+      }
+    }
+    const ring: V2[] = [];
+    for (const p of raw) {
+      const last = ring[ring.length - 1];
+      if (last && vertKey(last) === vertKey(p)) continue;
+      ring.push(p);
+    }
+    if (ring.length >= 2 && vertKey(ring[0]) === vertKey(ring[ring.length - 1])) ring.pop();
+    return ring;
+  };
+  // Rebuild each affected host polygon once: new Polygon + addFace per face
+  // (the spliced face with its new ring, all other faces unchanged) — the
+  // same construction svgToRegions uses. A face's splices are applied one at
+  // a time: a splice is kept only if the ring rebuilt with the accepted set
+  // plus that splice is acceptable, so a splice whose detour genuinely
+  // breaks the ring drops only itself and the face's other splices survive;
+  // the dropped splices count as failed validation. The rebuild is accepted
+  // if the polygon is non-empty and has positive area (each spliced face
+  // was already checked by ringAcceptable, and pinched faces are valid
+  // input for the builder); otherwise the host is left unchanged (the hole
+  // stays a manifold slit).
+  let merged = 0;
+  let failedValidation = 0;
+  const mergedRegions = new Set<number>();
+  for (const [ri, byFace] of splices) {
+    const faces = [...regions[ri].polygon.faces];
+    const next = new Polygon();
+    let ok = true;
+    let dropped = 0;
+    for (let fi = 0; fi < faces.length; fi++) {
+      const orig: V2[] = faces[fi].vertices.map((v: { x: number; y: number }) => ({ x: v.x, y: v.y }));
+      const byEdge = byFace.get(fi);
+      let ring = orig;
+      let droppedHere = 0;
+      if (byEdge) {
+        let accepted = new Map<number, Splice>();
+        for (const [ei, sp] of byEdge) {
+          const tentative = new Map(accepted);
+          tentative.set(ei, sp);
+          const cand = rebuildRing(orig, tentative);
+          if (ringAcceptable(cand)) { accepted = tentative; ring = cand; }
+          else droppedHere++;
+        }
+      }
+      dropped += droppedHere;
+      try { next.addFace(ring.map((p) => point(p.x, p.y))); }
+      catch { ok = false; break; }
+    }
+    const total = splicedLoops.get(ri) || 0;
+    if (ok && !next.isEmpty() && next.area() > 0) {
+      regions[ri].polygon = next;
+      const survived = total - dropped;
+      if (survived > 0) {
+        merged += survived;
+        mergedRegions.add(ri);
+      }
+      failedValidation += dropped;
+    } else {
+      // Validation failed: the merge is skipped (the hole stays a manifold
+      // slit) — count it so skipped merges are visible.
+      failedValidation += total;
+    }
+  }
+  console.log(`mergeMicroHoles: merged=${merged} micro-hole(s) into ${mergedRegions.size} region(s) (scanned ${scanned} walk(s), ${simpleCycles} simple cycle(s), ${failedValidation} failed validation)`);
+  return merged;
 }
 
 /**
@@ -1790,7 +2098,7 @@ export async function createManifoldGroupForExport(
   const regions = await svgToRegions(svgContent);
   if (!regions || regions.length === 0) return null;
   await removeRegionOverlaps(regions);
-  fillMicroHoles(regions);
+  mergeMicroHoles(regions);
   const geometry = buildManifoldGeometry(regions, colorHeights, layerHeightMM);
   if (!geometry) return null;
 

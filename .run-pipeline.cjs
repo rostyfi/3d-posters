@@ -38566,17 +38566,18 @@ async function removeRegionOverlaps(regions) {
   }
   console.log(`removeRegionOverlaps: fixed=${totalFixed} rejected(failed)=${totalRejected}`);
 }
-function fillMicroHoles(regions) {
+function mergeMicroHoles(regions) {
   const directed = [];
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (let ri = 0; ri < regions.length; ri++) {
     const poly = regions[ri].polygon;
     if (poly.isEmpty()) continue;
-    for (const f of poly.faces) {
-      const vs = f.vertices;
+    const faces = [...poly.faces];
+    for (let fi = 0; fi < faces.length; fi++) {
+      const vs = faces[fi].vertices;
       const n = vs.length;
-      for (let i = 0; i < n; i++) {
-        const u = vs[i], v = vs[(i + 1) % n];
+      for (let ei = 0; ei < n; ei++) {
+        const u = vs[ei], v = vs[(ei + 1) % n];
         if (Math.abs(u.x - v.x) < 1e-9 && Math.abs(u.y - v.y) < 1e-9) continue;
         if (u.x < minX) minX = u.x;
         if (u.x > maxX) maxX = u.x;
@@ -38591,7 +38592,9 @@ function fillMicroHoles(regions) {
           ka,
           kb,
           k: ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`,
-          ri
+          ri,
+          fi,
+          ei
         });
       }
     }
@@ -38613,16 +38616,36 @@ function fillMicroHoles(regions) {
   const used = new Array(wallEdges.length).fill(false);
   const extent = Math.max(maxX - minX, maxY - minY);
   const widthLimit = 2 * extent * 1e-6;
-  let filled = 0, scanned = 0;
+  const splices = /* @__PURE__ */ new Map();
+  const splicedLoops = /* @__PURE__ */ new Map();
+  let scanned = 0;
+  let simpleCycles = 0;
+  const decomposeWalk = (walk) => {
+    const seen = /* @__PURE__ */ new Map();
+    for (let j = 0; j < walk.length; j++) {
+      const k = wallEdges[walk[j]].ka;
+      const prev = seen.get(k);
+      if (prev !== void 0) {
+        const a = walk.slice(prev, j);
+        const b = walk.slice(j).concat(walk.slice(0, prev));
+        return [...decomposeWalk(a), ...decomposeWalk(b)];
+      }
+      seen.set(k, j);
+    }
+    return [walk];
+  };
   for (let i = 0; i < wallEdges.length; i++) {
     if (used[i]) continue;
     const chain = [i];
     used[i] = true;
     const startKey = wallEdges[i].ka;
+    const startX = wallEdges[i].ax, startY = wallEdges[i].ay;
     let cur = wallEdges[i].kb;
-    while (cur !== startKey) {
-      const cands = outgoing.get(cur);
+    let curX = wallEdges[i].bx, curY = wallEdges[i].by;
+    let closed = cur === startKey;
+    while (!closed) {
       let next = -1;
+      const cands = outgoing.get(cur);
       if (cands) {
         for (const ci of cands) {
           if (!used[ci]) {
@@ -38631,52 +38654,246 @@ function fillMicroHoles(regions) {
           }
         }
       }
-      if (next < 0) break;
+      if (next < 0) {
+        let best = 2e-3;
+        for (let ci = 0; ci < wallEdges.length; ci++) {
+          if (used[ci]) continue;
+          const d = Math.hypot(wallEdges[ci].ax - curX, wallEdges[ci].ay - curY);
+          if (d <= best) {
+            best = d;
+            next = ci;
+          }
+        }
+      }
+      if (next < 0) {
+        closed = Math.hypot(curX - startX, curY - startY) <= 2e-3;
+        break;
+      }
       used[next] = true;
       chain.push(next);
       cur = wallEdges[next].kb;
+      curX = wallEdges[next].bx;
+      curY = wallEdges[next].by;
+      closed = cur === startKey;
     }
-    if (cur !== startKey) continue;
+    if (!closed) continue;
     scanned++;
-    const pts = [];
-    for (const ci of chain) {
-      const p = { x: wallEdges[ci].ax, y: wallEdges[ci].ay };
-      const last = pts[pts.length - 1];
-      if (last && vertKey(last) === vertKey(p)) continue;
-      pts.push(p);
+    for (const cycle of decomposeWalk(chain)) {
+      simpleCycles++;
+      const pts = [];
+      const pushPt = (p) => {
+        const last = pts[pts.length - 1];
+        if (last && vertKey(last) === vertKey(p)) return;
+        pts.push(p);
+      };
+      let prevEnd = null;
+      for (const ci of cycle) {
+        const e = wallEdges[ci];
+        const p = { x: e.ax, y: e.ay };
+        if (prevEnd && vertKey(prevEnd) !== vertKey(p)) pushPt(prevEnd);
+        pushPt(p);
+        prevEnd = { x: e.bx, y: e.by };
+      }
+      if (prevEnd && vertKey(prevEnd) !== vertKey(pts[0])) pushPt(prevEnd);
+      if (pts.length >= 2 && vertKey(pts[0]) === vertKey(pts[pts.length - 1])) pts.pop();
+      if (pts.length < 3) continue;
+      let shoelace = 0, perimeter = 0;
+      for (let j = 0; j < pts.length; j++) {
+        const a = pts[j], b = pts[(j + 1) % pts.length];
+        shoelace += a.x * b.y - b.x * a.y;
+        perimeter += Math.hypot(b.x - a.x, b.y - a.y);
+      }
+      if (perimeter < 1e-18) continue;
+      const area = Math.abs(shoelace) / 2;
+      const w = 2 * area / perimeter;
+      if (!(w < widthLimit)) continue;
+      const m = cycle.length;
+      let hostAt = -1, hostArea = -1;
+      for (let ci = 0; ci < m; ci++) {
+        const prev = wallEdges[cycle[(ci - 1 + m) % m]];
+        const e = wallEdges[cycle[ci]];
+        if (prev.ri === e.ri) continue;
+        const a = regions[e.ri].polygon.area();
+        if (a > hostArea) {
+          hostArea = a;
+          hostAt = ci;
+        }
+      }
+      if (hostAt < 0) continue;
+      const host = wallEdges[cycle[hostAt]];
+      let k = 1;
+      while (k < m && wallEdges[cycle[(hostAt + k) % m]].ri === host.ri) k++;
+      let compHasHost = false;
+      for (let ci = 0; ci < m; ci++) {
+        if (ci >= hostAt && ci < hostAt + k) continue;
+        if (wallEdges[cycle[ci]].ri === host.ri) {
+          compHasHost = true;
+          break;
+        }
+      }
+      if (compHasHost) continue;
+      const onSegStrict = (p, a, b) => {
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len2 = dx * dx + dy * dy;
+        if (len2 < 1e-18) return false;
+        const px = p.x - a.x, py = p.y - a.y;
+        if (Math.abs(dx * py - dy * px) > 1e-6 * Math.sqrt(len2)) return false;
+        const t = (dx * px + dy * py) / len2;
+        return t > 1e-12 && t < 1 - 1e-12;
+      };
+      if (m === 3 && k === 1) {
+        const chainE = wallEdges[cycle[hostAt]];
+        const comp1 = wallEdges[cycle[(hostAt + 1) % m]];
+        const comp2 = wallEdges[cycle[(hostAt + 2) % m]];
+        const J = { x: chainE.ax, y: chainE.ay };
+        const K = { x: chainE.bx, y: chainE.by };
+        let target = null;
+        if (onSegStrict(J, { x: comp1.ax, y: comp1.ay }, { x: comp1.bx, y: comp1.by })) {
+          target = { e: comp1, pt: J };
+        } else if (onSegStrict(K, { x: comp2.ax, y: comp2.ay }, { x: comp2.bx, y: comp2.by })) {
+          target = { e: comp2, pt: K };
+        }
+        if (target) {
+          let byFace2 = splices.get(target.e.ri);
+          if (!byFace2) {
+            byFace2 = /* @__PURE__ */ new Map();
+            splices.set(target.e.ri, byFace2);
+          }
+          let byEdge2 = byFace2.get(target.e.fi);
+          if (!byEdge2) {
+            byEdge2 = /* @__PURE__ */ new Map();
+            byFace2.set(target.e.fi, byEdge2);
+          }
+          byEdge2.set(target.e.ei, { insert: [target.pt], skip: 0 });
+          splicedLoops.set(target.e.ri, (splicedLoops.get(target.e.ri) || 0) + 1);
+          continue;
+        }
+      }
+      const insert = [];
+      for (let t = 1; t <= m - k; t++) {
+        const e = wallEdges[cycle[(hostAt - t + m) % m]];
+        const nx = wallEdges[cycle[(hostAt - t + 1 + m) % m]];
+        if (vertKey({ x: e.bx, y: e.by }) !== vertKey({ x: nx.ax, y: nx.ay })) {
+          insert.push({ x: e.bx, y: e.by });
+        }
+        insert.push({ x: e.ax, y: e.ay });
+      }
+      let byFace = splices.get(host.ri);
+      if (!byFace) {
+        byFace = /* @__PURE__ */ new Map();
+        splices.set(host.ri, byFace);
+      }
+      let byEdge = byFace.get(host.fi);
+      if (!byEdge) {
+        byEdge = /* @__PURE__ */ new Map();
+        byFace.set(host.fi, byEdge);
+      }
+      byEdge.set(host.ei, { insert, skip: k - 1 });
+      splicedLoops.set(host.ri, (splicedLoops.get(host.ri) || 0) + 1);
     }
-    if (pts.length >= 2 && vertKey(pts[0]) === vertKey(pts[pts.length - 1])) pts.pop();
-    if (pts.length < 3) continue;
-    let shoelace = 0, perimeter = 0;
-    for (let j = 0; j < pts.length; j++) {
-      const a = pts[j], b = pts[(j + 1) % pts.length];
-      shoelace += a.x * b.y - b.x * a.y;
-      perimeter += Math.hypot(b.x - a.x, b.y - a.y);
-    }
-    if (perimeter < 1e-18) continue;
-    const area = Math.abs(shoelace) / 2;
-    const w = 2 * area / perimeter;
-    if (!(w < widthLimit)) continue;
-    const color = regions[wallEdges[chain[0]].ri].color;
-    const fillPts = shoelace < 0 ? [...pts].reverse() : pts;
-    const polygon2 = new Polygon$1();
-    try {
-      polygon2.addFace(fillPts.map((p) => point(p.x, p.y)));
-    } catch {
-      continue;
-    }
-    if (polygon2.isEmpty() || polygon2.area() <= 0) continue;
-    regions.push({ color, polygon: polygon2 });
-    filled++;
   }
-  console.log(`fillMicroHoles: filled=${filled} micro-hole(s) (scanned ${scanned} boundary loop(s))`);
-  return filled;
+  const ringAcceptable = (ring) => {
+    const probe = new Polygon$1();
+    try {
+      probe.addFace(ring.map((p) => point(p.x, p.y)));
+    } catch {
+      return false;
+    }
+    if (probe.isEmpty() || probe.area() <= 0) return false;
+    for (const lobe of splitRingAtRepeats(ring)) {
+      const lp = new Polygon$1();
+      try {
+        lp.addFace(lobe.map((p) => point(p.x, p.y)));
+      } catch {
+        return false;
+      }
+      if (lp.isEmpty() || !lp.isValid()) return false;
+    }
+    return true;
+  };
+  const rebuildRing = (orig, byEdge) => {
+    const n = orig.length;
+    const covered2 = new Array(n).fill(false);
+    for (const [a, sp] of byEdge) {
+      for (let t = 1; t <= sp.skip; t++) covered2[(a + t) % n] = true;
+    }
+    let start = 0;
+    while (start < n && covered2[start]) start++;
+    const raw = [];
+    if (start < n) {
+      let ei = start, advanced = 0;
+      while (advanced < n) {
+        raw.push(orig[ei]);
+        const sp = byEdge.get(ei);
+        if (sp) for (const p of sp.insert) raw.push(p);
+        const step = sp ? 1 + sp.skip : 1;
+        ei = (ei + step) % n;
+        advanced += step;
+      }
+    }
+    const ring = [];
+    for (const p of raw) {
+      const last = ring[ring.length - 1];
+      if (last && vertKey(last) === vertKey(p)) continue;
+      ring.push(p);
+    }
+    if (ring.length >= 2 && vertKey(ring[0]) === vertKey(ring[ring.length - 1])) ring.pop();
+    return ring;
+  };
+  let merged = 0;
+  let failedValidation = 0;
+  const mergedRegions = /* @__PURE__ */ new Set();
+  for (const [ri, byFace] of splices) {
+    const faces = [...regions[ri].polygon.faces];
+    const next = new Polygon$1();
+    let ok = true;
+    let dropped = 0;
+    for (let fi = 0; fi < faces.length; fi++) {
+      const orig = faces[fi].vertices.map((v) => ({ x: v.x, y: v.y }));
+      const byEdge = byFace.get(fi);
+      let ring = orig;
+      let droppedHere = 0;
+      if (byEdge) {
+        let accepted = /* @__PURE__ */ new Map();
+        for (const [ei, sp] of byEdge) {
+          const tentative = new Map(accepted);
+          tentative.set(ei, sp);
+          const cand = rebuildRing(orig, tentative);
+          if (ringAcceptable(cand)) {
+            accepted = tentative;
+            ring = cand;
+          } else droppedHere++;
+        }
+      }
+      dropped += droppedHere;
+      try {
+        next.addFace(ring.map((p) => point(p.x, p.y)));
+      } catch {
+        ok = false;
+        break;
+      }
+    }
+    const total = splicedLoops.get(ri) || 0;
+    if (ok && !next.isEmpty() && next.area() > 0) {
+      regions[ri].polygon = next;
+      const survived = total - dropped;
+      if (survived > 0) {
+        merged += survived;
+        mergedRegions.add(ri);
+      }
+      failedValidation += dropped;
+    } else {
+      failedValidation += total;
+    }
+  }
+  console.log(`mergeMicroHoles: merged=${merged} micro-hole(s) into ${mergedRegions.size} region(s) (scanned ${scanned} walk(s), ${simpleCycles} simple cycle(s), ${failedValidation} failed validation)`);
+  return merged;
 }
 async function createManifoldGroupForExport(svgContent, colorHeights, scaleFactor, boundingBox, layerHeightMM) {
   const regions = await svgToRegions(svgContent);
   if (!regions || regions.length === 0) return null;
   await removeRegionOverlaps(regions);
-  fillMicroHoles(regions);
+  mergeMicroHoles(regions);
   const geometry = buildManifoldGeometry(regions, colorHeights, layerHeightMM);
   if (!geometry) return null;
   const group = new THREE.Group();

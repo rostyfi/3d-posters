@@ -186,3 +186,80 @@ point-contact slots would lower it by 2 each).
   not covered by them.
 - The failing STL from the run above is kept at
   `export-2026-08-06 232814.stl` (2.96 MB) for inspection.
+
+---
+
+## RESOLVED 2026-10-11 — watertightness achieved (exploration loop, ideas 01–09)
+
+Final state: `./run-pipeline.sh "export-2026-08-06 232814.svg"` →
+**WATERTIGHT: PASS, 3/3 runs** (the k-means palette is randomized per run):
+
+| Run | non-manifold | mis-oriented | volume | edge histogram | Euler V−E+F |
+|-----|--------------|--------------|--------|----------------|-------------|
+| 1 | 0 | 0 | 1379.81 mm³ | all-2s (96942) | −6 |
+| 2 | 0 | 0 | 1379.81 mm³ | all-2s (95724) | −4 |
+| 3 | 0 | 0 | 1379.81 mm³ | all-2s (95208) | 0 |
+
+Euler is informational only: the poster keeps legitimate hairline
+through-slots wider than the weld grid (their walls do not weld → manifold),
+so V−E+F is not required to be 2.
+
+### The fix that landed (idea 09, in `mergeMicroHoles`, src/3d/svg-to-3d.ts)
+
+`mergeMicroHoles` absorbs each micro-hole (a hairline gap narrower than the
+STL weld grid, 1e-4 mm ≈ 1.79e-3 view units at the 100 mm export) into an
+adjacent region by ring surgery, so the hole's boundary edges pair exactly in
+the builder's edge map — no walls, no weld-collapsed double walls. Idea 09
+fixed the three defects that made idea 08's splices fail validation (37 of
+44 dropped, holes left unmerged):
+
+1. **Insertion-splice for degenerate collinear cycles** (m === 3, k === 1,
+   a chain endpoint lying strictly inside a complement edge): the cycle is a
+   zero-area slit whose complement is a spike retracing the chain's line; the
+   detour-splice would self-touch at the junction vertex. Instead the
+   spanning complement edge is split at the chain endpoint in its OWNER's
+   ring (`{ insert: [endpoint], skip: 0 }`) — the owner's new edge pairs with
+   the host's chain, the host's ring is untouched. The insertion typically
+   pinches the owner's ring (the endpoint visited twice); the builder's
+   `splitRingAtRepeats` drops the degenerate spike lobe and keeps the main
+   ring whose closing edge is K→J.
+2. **Pinch-tolerant probe** (`ringAcceptable`): a rebuilt ring is accepted
+   iff it has positive area and every lobe of the builder's own
+   `splitRingAtRepeats` is a simple ring. Pinched rings (two holes sharing a
+   corner vertex, both spliced into one host face) are accepted — the builder
+   splits them into simple lobes (`splitSelfTouchingIslands`) and opens the
+   point contact (`resolvePointContacts`). Crossings, collinear overlaps and
+   vertex-on-edge touches are still rejected (the builder cannot handle
+   those).
+3. **Per-splice fallback**: a face's splices are applied one at a time
+   (tentative = accepted set + next splice, kept only if acceptable), so a
+   splice that genuinely breaks the ring drops only itself instead of
+   dropping the whole face's splices.
+4. **Guard**: cycles whose complement contains host-owned edges (the host has
+   a second run in the cycle) are skipped — the detour would retrace the
+   host's own edges into coincident doubled edges.
+
+Result: `mergeMicroHoles: merged=19..42 ... 0 failed validation` across the
+three gate runs (was 37 failed in idea 08).
+
+### Iteration history (each idea diagnosed the next failure)
+
+- idea 01 (fill micro-holes with sliver regions): FAIL — the fills are
+  sub-weld-grid slivers; the weld collapses them into coincident
+  opposite-winding pairs (12 count-3 edges).
+- idea 05 (merge via ring surgery): FAIL — figure-eight hole walks (two
+  holes sharing a vertex) splice a self-touching ring (4 count-4 edges).
+- idea 06 (decompose walks into simple cycles): 1 of 3 gate runs PASS —
+  multi-edge host chains re-insert the host's own chain vertices.
+- idea 07 (generalize the splice to the maximal chain): FAIL — the rebuild
+  walk never pushed `sp.insert` (6 count-4 edges, every merge a no-op).
+- idea 08 (apply the insert, one line): FAIL — 2 count-4 edges at the
+  original 554.77 spot; 37 of 44 splices fail validation (the three defects
+  above, diagnosed by an instrumented in-process run, `inspect-e2e.ts`
+  seed 7).
+- idea 09: **PASS 3/3.**
+
+Full per-idea write-ups: `watertightness_check/idea-01..09-*.md` (each with a
+`## Result (controller)` section); loop protocol and status table:
+`watertightness_check/README.md`; original loop instruction:
+`watertightness_check/exploration_loop.md`.

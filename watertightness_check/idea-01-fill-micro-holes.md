@@ -172,3 +172,10 @@ regions.
 Status: loop paused — the controller teleported into remote execution. The
 fix is uncommitted in the working tree; the pre-fix state is on remote
 `master` (commit `b048cf4`).
+
+## Update (loop resumed)
+
+Idea 01's fill was replaced by idea 05 (merge via ring surgery) — see
+`idea-05-merge-micro-holes.md`. The fill's failure (12 count-3 edges) was
+diagnosed as: the fill regions are sub-weld-grid slivers, and the export
+weld mangles them.
